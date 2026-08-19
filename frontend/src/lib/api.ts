@@ -1,13 +1,30 @@
-const BASE = import.meta.env.VITE_SERVER_URL; // e.g. https://xxx.up.railway.app
+const BASE = import.meta.env.VITE_SERVER_URL || '';
 
 export interface RoomMeta {
   roomId: string;
   name: string;
+  description?: string;
+  template?: string;
   userCount?: number;
+  createdAt?: string;
+  updatedAt?: string;
+  strokeCount?: number;
 }
 
-// Called when user clicks "Create Room"
+export async function apiFetchRooms(): Promise<RoomMeta[]> {
+  try {
+    const res = await fetch(`${BASE}/api/rooms`);
+    if (!res.ok) return [];
+    return res.json();
+  } catch {
+    return [];
+  }
+}
+
 export async function apiCreateRoom(payload: {
+  name?: string;
+  description?: string;
+  template?: string;
   username: string;
   avatar: string;
   color: string;
@@ -21,9 +38,25 @@ export async function apiCreateRoom(payload: {
   return res.json();
 }
 
-// Called when user clicks "Join Room" — validates the code exists
 export async function apiGetRoom(roomId: string): Promise<RoomMeta> {
   const res = await fetch(`${BASE}/api/rooms/${roomId}`);
   if (!res.ok) throw new Error('Room not found');
   return res.json();
+}
+
+export async function apiUpdateRoom(roomId: string, updates: Partial<RoomMeta>): Promise<RoomMeta> {
+  const res = await fetch(`${BASE}/api/rooms/${roomId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) throw new Error('Failed to update room');
+  return res.json();
+}
+
+export async function apiDeleteRoom(roomId: string): Promise<void> {
+  const res = await fetch(`${BASE}/api/rooms/${roomId}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error('Failed to delete room');
 }
