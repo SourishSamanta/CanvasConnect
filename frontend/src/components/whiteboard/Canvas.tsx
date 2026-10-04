@@ -1,76 +1,376 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { useWhiteboardStore, Stroke, Point } from '@/stores/whiteboardStore';
-import { yjsUpdateCursor, yjsClearCursor } from '@/hooks/useWhiteboard'; // ← ADD
-import RemoteCursors from './RemoteCursors';  // ← ADD
+import { yjsUpdateCursor, yjsClearCursor } from '@/hooks/useWhiteboard';
+import RemoteCursors from './RemoteCursors';
 
-// drawStroke — completely unchanged
-function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke) {
-  if (stroke.points.length < 2) return;
+function getEffectiveColor(color: string, theme: string): string {
+  if (color === 'eraser') return '#000000';
+  if (theme === 'dark' && (color === '#1e1e1e' || color === '#000000')) {
+    return '#ffffff';
+  }
+  if (theme === 'light' && color === '#ffffff') {
+    return '#1e1e1e';
+  }
+  return color;
+}
+
+function drawArrowHead(ctx: CanvasRenderingContext2D, from: Point, to: Point, size: number) {
+  const angle = Math.atan2(to.y - from.y, to.x - from.x);
+  const headLength = Math.max(12, size * 3.5);
   ctx.beginPath();
-  ctx.strokeStyle = stroke.color;
+  ctx.moveTo(to.x, to.y);
+  ctx.lineTo(
+    to.x - headLength * Math.cos(angle - Math.PI / 6),
+    to.y - headLength * Math.sin(angle - Math.PI / 6)
+  );
+  ctx.lineTo(
+    to.x - headLength * Math.cos(angle + Math.PI / 6),
+    to.y - headLength * Math.sin(angle + Math.PI / 6)
+  );
+  ctx.closePath();
+  ctx.fillStyle = ctx.strokeStyle;
+  ctx.fill();
+}
+
+function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke, theme: string) {
+  if (!stroke.points || stroke.points.length === 0) return;
+  const pts = stroke.points;
+
+  ctx.beginPath();
+  ctx.strokeStyle = getEffectiveColor(stroke.color, theme);
   ctx.lineWidth = stroke.size;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
-  ctx.globalCompositeOperation = stroke.tool === 'eraser' ? 'destination-out' : 'source-over';
-  const pts = stroke.points;
-  ctx.moveTo(pts[0].x, pts[0].y);
-  if (pts.length === 2) {
-    ctx.lineTo(pts[1].x, pts[1].y);
-  } else {
-    for (let i = 1; i < pts.length - 1; i++) {
-      const mx = (pts[i].x + pts[i + 1].x) / 2;
-      const my = (pts[i].y + pts[i + 1].y) / 2;
-      ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
-    }
-    ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
-  }
-  ctx.stroke();
   ctx.globalCompositeOperation = 'source-over';
+
+  if (stroke.tool === 'rectangle') {
+    const p0 = pts[0];
+    const p1 = pts.length > 1 ? pts[1] : pts[0];
+    const minX = Math.min(p0.x, p1.x);
+    const minY = Math.min(p0.y, p1.y);
+    const w = Math.abs(p1.x - p0.x);
+    const h = Math.abs(p1.y - p0.y);
+    ctx.strokeRect(minX, minY, w, h);
+  } else if (stroke.tool === 'circle') {
+    const center = pts[0];
+    const edge = pts.length > 1 ? pts[1] : pts[0];
+    const radius = Math.hypot(edge.x - center.x, edge.y - center.y);
+    ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
+    ctx.stroke();
+  } else if (stroke.tool === 'line') {
+    const p0 = pts[0];
+    const p1 = pts.length > 1 ? pts[1] : pts[0];
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
+    ctx.stroke();
+  } else if (stroke.tool === 'arrow') {
+    const p0 = pts[0];
+    const p1 = pts.length > 1 ? pts[1] : pts[0];
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
+    ctx.stroke();
+    drawArrowHead(ctx, p0, p1, stroke.size);
+  } else {
+    // Freehand Pen
+    if (pts.length < 2) {
+      ctx.arc(pts[0].x, pts[0].y, stroke.size / 2, 0, Math.PI * 2);
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.fill();
+    } else {
+      ctx.moveTo(pts[0].x, pts[0].y);
+      if (pts.length === 2) {
+        ctx.lineTo(pts[1].x, pts[1].y);
+      } else {
+        for (let i = 1; i < pts.length - 1; i++) {
+          const mx = (pts[i].x + pts[i + 1].x) / 2;
+          const my = (pts[i].y + pts[i + 1].y) / 2;
+          ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+        }
+        ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+      }
+      ctx.stroke();
+    }
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+}
+
+function distToSegment(p: Point, v: Point, w: Point) {
+  const l2 = (w.x - v.x) ** 2 + (w.y - v.y) ** 2;
+  if (l2 === 0) return Math.hypot(p.x - v.x, p.y - v.y);
+  let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p.x - (v.x + t * (w.x - v.x)), p.y - (v.y + t * (w.y - v.y)));
+}
+
+function isPointNearStroke(p: Point, stroke: Stroke, zoom: number): boolean {
+  if (!stroke.points || stroke.points.length === 0) return false;
+  const threshold = Math.max(12 / zoom, stroke.size / 2 + 6 / zoom);
+  const pts = stroke.points;
+
+  if (stroke.tool === 'rectangle') {
+    const p0 = pts[0];
+    const p1 = pts.length > 1 ? pts[1] : pts[0];
+    const minX = Math.min(p0.x, p1.x) - threshold;
+    const maxX = Math.max(p0.x, p1.x) + threshold;
+    const minY = Math.min(p0.y, p1.y) - threshold;
+    const maxY = Math.max(p0.y, p1.y) + threshold;
+    return p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY;
+  }
+
+  if (stroke.tool === 'circle') {
+    const center = pts[0];
+    const edge = pts.length > 1 ? pts[1] : pts[0];
+    const radius = Math.hypot(edge.x - center.x, edge.y - center.y);
+    const dist = Math.hypot(p.x - center.x, p.y - center.y);
+    return Math.abs(dist - radius) <= threshold || dist <= radius;
+  }
+
+  if (pts.length === 1) {
+    return Math.hypot(p.x - pts[0].x, p.y - pts[0].y) <= threshold;
+  }
+
+  for (let i = 0; i < pts.length - 1; i++) {
+    if (distToSegment(p, pts[i], pts[i + 1]) <= threshold) return true;
+  }
+  return false;
+}
+
+function getStrokeBounds(stroke: Stroke) {
+  const pts = stroke.points;
+  if (stroke.tool === 'circle' && pts.length >= 2) {
+    const cx = pts[0].x;
+    const cy = pts[0].y;
+    const r = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+    return {
+      minX: cx - r,
+      minY: cy - r,
+      maxX: cx + r,
+      maxY: cy + r,
+      width: r * 2,
+      height: r * 2,
+    };
+  }
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const pt of pts) {
+    if (pt.x < minX) minX = pt.x;
+    if (pt.x > maxX) maxX = pt.x;
+    if (pt.y < minY) minY = pt.y;
+    if (pt.y > maxY) maxY = pt.y;
+  }
+
+  return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
+}
+
+function getGroupBounds(strokes: Stroke[], selectedIds: string[]) {
+  const selected = strokes.filter((s) => selectedIds.includes(s.id));
+  if (selected.length === 0) return null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const s of selected) {
+    const b = getStrokeBounds(s);
+    if (b.minX < minX) minX = b.minX;
+    if (b.minY < minY) minY = b.minY;
+    if (b.maxX > maxX) maxX = b.maxX;
+    if (b.maxY > maxY) maxY = b.maxY;
+  }
+  return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
+}
+
+function isStrokeInBox(stroke: Stroke, box: { minX: number; minY: number; maxX: number; maxY: number }) {
+  const b = getStrokeBounds(stroke);
+  return !(b.maxX < box.minX || b.minX > box.maxX || b.maxY < box.minY || b.minY > box.maxY);
 }
 
 export default function Canvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const isDrawing  = useRef(false);
-  const isPanning  = useRef(false);
-  const lastPan    = useRef({ x: 0, y: 0 });
-  const spaceDown  = useRef(false);
+  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  const { strokes, currentStroke, startStroke, addPoint, endStroke,
-          zoom, panX, panY, setZoom, setPan, theme } = useWhiteboardStore();
+  const isDrawing = useRef(false);
+  const isPanning = useRef(false);
+  const isErasing = useRef(false);
+  const isDraggingGroup = useRef(false);
+  const isMarqueeSelecting = useRef(false);
 
-  // render — completely unchanged
+  const lastPan = useRef({ x: 0, y: 0 });
+  const spaceDown = useRef(false);
+  const dragStartPos = useRef<Point>({ x: 0, y: 0 });
+  const initialGroupPoints = useRef<Map<string, Point[]>>(new Map());
+  const mouseCanvasPos = useRef<Point | null>(null);
+
+  const [marqueeBox, setMarqueeBox] = useState<{ start: Point; current: Point } | null>(null);
+
+  // Mobile Touch Gestures
+  const touchStartDist = useRef<number | null>(null);
+  const touchStartZoom = useRef<number>(1);
+  const touchStartMid = useRef<Point | null>(null);
+  const touchStartPan = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+
+  const {
+    strokes,
+    currentStroke,
+    selectedStrokeIds,
+    startStroke,
+    addPoint,
+    endStroke,
+    setSelectedStrokeIds,
+    updateStrokes,
+    eraseAtPoint,
+    brushSize,
+    tool,
+    zoom,
+    panX,
+    panY,
+    setZoom,
+    setPan,
+    theme,
+  } = useWhiteboardStore();
+
   const render = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+
+    if (!offscreenCanvasRef.current) {
+      offscreenCanvasRef.current = document.createElement('canvas');
+    }
+    const offscreen = offscreenCanvasRef.current;
+    const offscreenCtx = offscreen.getContext('2d');
+
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.width / dpr;
     const h = canvas.height / dpr;
+
+    if (offscreen.width !== canvas.width || offscreen.height !== canvas.height) {
+      offscreen.width = canvas.width;
+      offscreen.height = canvas.height;
+    }
+
+    // 1. Clear Main Canvas & Render Background Grid
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = theme === 'dark' ? 'hsl(220, 15%, 12%)' : 'hsl(220, 14%, 98%)';
     ctx.fillRect(0, 0, w, h);
+
     ctx.save();
     ctx.translate(panX, panY);
     ctx.scale(zoom, zoom);
     ctx.strokeStyle = theme === 'dark' ? 'hsl(220, 14%, 20%)' : 'hsl(220, 14%, 92%)';
     ctx.lineWidth = 0.5 / zoom;
+
     const gridSize = 24;
     const startX = Math.floor(-panX / zoom / gridSize) * gridSize - gridSize;
     const startY = Math.floor(-panY / zoom / gridSize) * gridSize - gridSize;
     const endX = startX + w / zoom + gridSize * 2;
     const endY = startY + h / zoom + gridSize * 2;
+
     for (let x = startX; x < endX; x += gridSize) {
-      ctx.beginPath(); ctx.moveTo(x, startY); ctx.lineTo(x, endY); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x, startY);
+      ctx.lineTo(x, endY);
+      ctx.stroke();
     }
     for (let y = startY; y < endY; y += gridSize) {
-      ctx.beginPath(); ctx.moveTo(startX, y); ctx.lineTo(endX, y); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(startX, y);
+      ctx.lineTo(endX, y);
+      ctx.stroke();
     }
-    for (const stroke of strokes) drawStroke(ctx, stroke);
-    if (currentStroke) drawStroke(ctx, currentStroke);
     ctx.restore();
-  }, [strokes, currentStroke, zoom, panX, panY, theme]);
+
+    // 2. Render Strokes onto Offscreen Canvas
+    if (offscreenCtx) {
+      offscreenCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      offscreenCtx.clearRect(0, 0, w, h);
+      offscreenCtx.save();
+      offscreenCtx.translate(panX, panY);
+      offscreenCtx.scale(zoom, zoom);
+
+      for (const stroke of strokes) {
+        drawStroke(offscreenCtx, stroke, theme);
+      }
+      if (currentStroke) {
+        drawStroke(offscreenCtx, currentStroke, theme);
+      }
+      offscreenCtx.restore();
+    }
+
+    // 3. Composite Offscreen Canvas onto Main Canvas (IDENTITY TRANSFORM)
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.drawImage(offscreen, 0, 0, w, h);
+
+    // 4. Render Overlays in Canvas Coordinates (Selection Box & Eraser Ring)
+    ctx.save();
+    ctx.translate(panX, panY);
+    ctx.scale(zoom, zoom);
+
+    // Render Dragging Marquee Box
+    if (marqueeBox) {
+      const minX = Math.min(marqueeBox.start.x, marqueeBox.current.x);
+      const minY = Math.min(marqueeBox.start.y, marqueeBox.current.y);
+      const mw = Math.abs(marqueeBox.current.x - marqueeBox.start.x);
+      const mh = Math.abs(marqueeBox.current.y - marqueeBox.start.y);
+
+      ctx.fillStyle = theme === 'dark' ? 'rgba(59, 130, 246, 0.15)' : 'rgba(59, 130, 246, 0.1)';
+      ctx.fillRect(minX, minY, mw, mh);
+      ctx.strokeStyle = '#3b82f6';
+      ctx.lineWidth = 1.5 / zoom;
+      ctx.setLineDash([4 / zoom, 4 / zoom]);
+      ctx.strokeRect(minX, minY, mw, mh);
+    }
+
+    // Render Group Selection Bounding Box
+    if (selectedStrokeIds.length > 0) {
+      const bounds = getGroupBounds(strokes, selectedStrokeIds);
+      if (bounds) {
+        const padding = 8 / zoom;
+        const bx = bounds.minX - padding;
+        const by = bounds.minY - padding;
+        const bw = bounds.width + padding * 2;
+        const bh = bounds.height + padding * 2;
+
+        ctx.strokeStyle = '#3b82f6';
+        ctx.lineWidth = 1.5 / zoom;
+        ctx.setLineDash([6 / zoom, 6 / zoom]);
+        ctx.strokeRect(bx, by, bw, bh);
+
+        // Draw Handles
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#ffffff';
+        const hs = 6 / zoom;
+        const corners = [
+          { x: bx, y: by },
+          { x: bx + bw, y: by },
+          { x: bx, y: by + bh },
+          { x: bx + bw, y: by + bh },
+        ];
+        for (const c of corners) {
+          ctx.fillRect(c.x - hs / 2, c.y - hs / 2, hs, hs);
+          ctx.strokeRect(c.x - hs / 2, c.y - hs / 2, hs, hs);
+        }
+      }
+    }
+
+    // Render Eraser Ring Overlay
+    if (tool === 'eraser' && mouseCanvasPos.current) {
+      const r = Math.max(12 / zoom, (brushSize * 3) / zoom);
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.arc(mouseCanvasPos.current.x, mouseCanvasPos.current.y, r, 0, Math.PI * 2);
+      ctx.strokeStyle = theme === 'dark' ? 'rgba(255, 255, 255, 0.7)' : 'rgba(0, 0, 0, 0.7)';
+      ctx.fillStyle = theme === 'dark' ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.08)';
+      ctx.lineWidth = 1.5 / zoom;
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }, [strokes, currentStroke, selectedStrokeIds, marqueeBox, zoom, panX, panY, theme, tool, brushSize]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -78,7 +378,7 @@ export default function Canvas() {
     const resize = () => {
       const dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
-      canvas.width  = rect.width  * dpr;
+      canvas.width = rect.width * dpr;
       canvas.height = rect.height * dpr;
       render();
     };
@@ -87,36 +387,109 @@ export default function Canvas() {
     return () => window.removeEventListener('resize', resize);
   }, [render]);
 
-  useEffect(() => { render(); }, [render]);
-
   useEffect(() => {
-    const down = (e: KeyboardEvent) => { if (e.code === 'Space' && !e.repeat) { e.preventDefault(); spaceDown.current = true; } };
-    const up   = (e: KeyboardEvent) => { if (e.code === 'Space') spaceDown.current = false; };
+    render();
+  }, [render]);
+
+  // Spacebar pan toggle
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !e.repeat) {
+        e.preventDefault();
+        spaceDown.current = true;
+      }
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.code === 'Space') spaceDown.current = false;
+    };
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
-    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+    };
   }, []);
 
+  // Touchpad Two-Finger Pan & Pinch Zoom Handling
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const { zoom, panX, panY, setZoom, setPan } = useWhiteboardStore.getState();
-      const rect  = canvas.getBoundingClientRect();
-      const mx    = e.clientX - rect.left;
-      const my    = e.clientY - rect.top;
-      const delta = -e.deltaY * 0.001;
-      const newZoom = Math.min(5, Math.max(0.1, zoom * (1 + delta)));
-      const scale   = newZoom / zoom;
-      setPan(mx - (mx - panX) * scale, my - (my - panY) * scale);
-      setZoom(newZoom);
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+
+      if (e.ctrlKey) {
+        // Pinch Zoom / Ctrl + Wheel Zoom
+        const delta = -e.deltaY * 0.0015;
+        const newZoom = Math.min(5, Math.max(0.1, zoom * (1 + delta)));
+        const scale = newZoom / zoom;
+        setPan(mx - (mx - panX) * scale, my - (my - panY) * scale);
+        setZoom(newZoom);
+      } else {
+        // Touchpad Two-finger Pan / Mouse Wheel Scroll
+        setPan(panX - e.deltaX, panY - e.deltaY);
+      }
     };
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', onWheel);
   }, []);
 
-  const screenToCanvas = (e: React.MouseEvent<HTMLCanvasElement>): Point => {
+  // Mobile Touch Gestures (Pinch zoom & 2-finger pan)
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        const t1 = e.touches[0];
+        const t2 = e.touches[1];
+        touchStartDist.current = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+        const state = useWhiteboardStore.getState();
+        touchStartZoom.current = state.zoom;
+        touchStartMid.current = { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
+        touchStartPan.current = { x: state.panX, y: state.panY };
+      }
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 2 && touchStartDist.current !== null && touchStartMid.current !== null) {
+        e.preventDefault();
+        const t1 = e.touches[0];
+        const t2 = e.touches[1];
+        const currentDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+        const scale = currentDist / touchStartDist.current;
+        const newZoom = Math.min(5, Math.max(0.1, touchStartZoom.current * scale));
+
+        const currentMid = { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 };
+        const dx = currentMid.x - touchStartMid.current.x;
+        const dy = currentMid.y - touchStartMid.current.y;
+
+        const { setZoom, setPan } = useWhiteboardStore.getState();
+        setPan(touchStartPan.current.x + dx, touchStartPan.current.y + dy);
+        setZoom(newZoom);
+      }
+    };
+
+    const onTouchEnd = () => {
+      touchStartDist.current = null;
+      touchStartMid.current = null;
+    };
+
+    canvas.addEventListener('touchstart', onTouchStart, { passive: true });
+    canvas.addEventListener('touchmove', onTouchMove, { passive: false });
+    canvas.addEventListener('touchend', onTouchEnd, { passive: true });
+
+    return () => {
+      canvas.removeEventListener('touchstart', onTouchStart);
+      canvas.removeEventListener('touchmove', onTouchMove);
+      canvas.removeEventListener('touchend', onTouchEnd);
+    };
+  }, []);
+
+  const screenToCanvas = (e: React.PointerEvent<HTMLCanvasElement> | React.MouseEvent<HTMLCanvasElement>): Point => {
     const rect = canvasRef.current!.getBoundingClientRect();
     return { x: (e.clientX - rect.left - panX) / zoom, y: (e.clientY - rect.top - panY) / zoom };
   };
@@ -128,14 +501,95 @@ export default function Canvas() {
       canvasRef.current?.setPointerCapture(e.pointerId);
       return;
     }
+
+    const canvasPoint = screenToCanvas(e);
+
+    // Real Eraser Handler: Directly trim/delete strokes underneath
+    if (tool === 'eraser') {
+      isErasing.current = true;
+      const { brushSize, zoom, eraseAtPoint } = useWhiteboardStore.getState();
+      const radius = Math.max(12 / zoom, (brushSize * 3) / zoom);
+      eraseAtPoint(canvasPoint, radius);
+      canvasRef.current?.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    if (tool === 'select') {
+      const groupBounds = getGroupBounds(strokes, selectedStrokeIds);
+      let clickedInsideGroup = false;
+      if (groupBounds) {
+        const padding = 12 / zoom;
+        clickedInsideGroup =
+          canvasPoint.x >= groupBounds.minX - padding &&
+          canvasPoint.x <= groupBounds.maxX + padding &&
+          canvasPoint.y >= groupBounds.minY - padding &&
+          canvasPoint.y <= groupBounds.maxY + padding;
+      }
+
+      if (clickedInsideGroup) {
+        isDraggingGroup.current = true;
+        dragStartPos.current = canvasPoint;
+        const map = new Map<string, Point[]>();
+        for (const s of strokes) {
+          if (selectedStrokeIds.includes(s.id)) {
+            map.set(
+              s.id,
+              s.points.map((pt) => ({ ...pt }))
+            );
+          }
+        }
+        initialGroupPoints.current = map;
+        canvasRef.current?.setPointerCapture(e.pointerId);
+        return;
+      }
+
+      let found: Stroke | null = null;
+      for (let i = strokes.length - 1; i >= 0; i--) {
+        if (isPointNearStroke(canvasPoint, strokes[i], zoom)) {
+          found = strokes[i];
+          break;
+        }
+      }
+
+      if (found) {
+        const newIds = e.shiftKey || e.ctrlKey
+          ? selectedStrokeIds.includes(found.id)
+            ? selectedStrokeIds.filter(id => id !== found.id)
+            : [...selectedStrokeIds, found.id]
+          : [found.id];
+
+        setSelectedStrokeIds(newIds);
+        isDraggingGroup.current = true;
+        dragStartPos.current = canvasPoint;
+        const map = new Map<string, Point[]>();
+        for (const s of strokes) {
+          if (newIds.includes(s.id)) {
+            map.set(
+              s.id,
+              s.points.map((pt) => ({ ...pt }))
+            );
+          }
+        }
+        initialGroupPoints.current = map;
+      } else {
+        setSelectedStrokeIds([]);
+        isMarqueeSelecting.current = true;
+        setMarqueeBox({ start: canvasPoint, current: canvasPoint });
+      }
+
+      canvasRef.current?.setPointerCapture(e.pointerId);
+      return;
+    }
+
     isDrawing.current = true;
     canvasRef.current?.setPointerCapture(e.pointerId);
-    startStroke(screenToCanvas(e));
+    startStroke(canvasPoint);
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    // ← ADDED: broadcast cursor to other users
     yjsUpdateCursor(e.clientX, e.clientY);
+    const canvasPoint = screenToCanvas(e);
+    mouseCanvasPos.current = canvasPoint;
 
     if (isPanning.current) {
       const dx = e.clientX - lastPan.current.x;
@@ -145,29 +599,109 @@ export default function Canvas() {
       setPan(panX + dx, panY + dy);
       return;
     }
-    if (!isDrawing.current) return;
-    addPoint(screenToCanvas(e));
+
+    if (isErasing.current && tool === 'eraser') {
+      const { brushSize, zoom, eraseAtPoint } = useWhiteboardStore.getState();
+      const radius = Math.max(12 / zoom, (brushSize * 3) / zoom);
+      eraseAtPoint(canvasPoint, radius);
+      render();
+      return;
+    }
+
+    if (isMarqueeSelecting.current) {
+      setMarqueeBox((prev) => (prev ? { ...prev, current: canvasPoint } : null));
+
+      if (marqueeBox) {
+        const minX = Math.min(marqueeBox.start.x, canvasPoint.x);
+        const maxX = Math.max(marqueeBox.start.x, canvasPoint.x);
+        const minY = Math.min(marqueeBox.start.y, canvasPoint.y);
+        const maxY = Math.max(marqueeBox.start.y, canvasPoint.y);
+
+        const box = { minX, minY, maxX, maxY };
+        const matchingIds = strokes
+          .filter((s) => isStrokeInBox(s, box))
+          .map((s) => s.id);
+        setSelectedStrokeIds(matchingIds);
+      }
+      return;
+    }
+
+    if (isDraggingGroup.current && selectedStrokeIds.length > 0) {
+      const dx = canvasPoint.x - dragStartPos.current.x;
+      const dy = canvasPoint.y - dragStartPos.current.y;
+
+      const updatedStrokes: Stroke[] = [];
+      for (const s of strokes) {
+        if (selectedStrokeIds.includes(s.id)) {
+          const initPts = initialGroupPoints.current.get(s.id);
+          if (initPts) {
+            const newPoints = initPts.map((pt) => ({ x: pt.x + dx, y: pt.y + dy }));
+            updatedStrokes.push({ ...s, points: newPoints });
+          }
+        }
+      }
+      if (updatedStrokes.length > 0) {
+        updateStrokes(updatedStrokes);
+      }
+      return;
+    }
+
+    if (!isDrawing.current) {
+      if (tool === 'eraser') render();
+      return;
+    }
+    addPoint(canvasPoint);
   };
 
   const handlePointerUp = () => {
-    if (isPanning.current) { isPanning.current = false; return; }
+    if (isPanning.current) {
+      isPanning.current = false;
+      return;
+    }
+    if (isErasing.current) {
+      isErasing.current = false;
+      return;
+    }
+    if (isMarqueeSelecting.current) {
+      isMarqueeSelecting.current = false;
+      setMarqueeBox(null);
+      return;
+    }
+    if (isDraggingGroup.current) {
+      isDraggingGroup.current = false;
+      return;
+    }
     isDrawing.current = false;
     endStroke();
   };
 
+  const getCursorStyle = () => {
+    if (spaceDown.current) return 'grab';
+    if (tool === 'eraser') return 'none';
+    if (tool === 'select') {
+      if (isDraggingGroup.current) return 'grabbing';
+      if (isMarqueeSelecting.current) return 'crosshair';
+      return 'default';
+    }
+    return 'crosshair';
+  };
+
   return (
-    // ← ADDED: wrapper div so RemoteCursors can overlay the canvas
     <div className="absolute inset-0">
       <canvas
         ref={canvasRef}
         className="absolute inset-0 w-full h-full"
-        style={{ touchAction: 'none', cursor: spaceDown.current ? 'grab' : 'crosshair' }}
+        style={{ touchAction: 'none', cursor: getCursorStyle() }}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
-        onPointerLeave={() => { yjsClearCursor(); handlePointerUp(); }} // ← CHANGED
+        onPointerLeave={() => {
+          yjsClearCursor();
+          mouseCanvasPos.current = null;
+          handlePointerUp();
+        }}
       />
-      <RemoteCursors /> {/* ← ADDED */}
+      <RemoteCursors />
     </div>
   );
 }

@@ -4,8 +4,10 @@ import Navbar from '@/components/layout/Navbar';
 import {
   useWhiteboardStore, AVAILABLE_AVATARS, AVAILABLE_CURSOR_COLORS, CanvasTemplate
 } from '@/stores/whiteboardStore';
+import { useAuthStore } from '@/stores/authStore';
 import {
-  User, Palette, Sparkles, Check, Save, MousePointer2, LayoutGrid, ArrowLeft
+  User, Palette, Sparkles, Check, Save, MousePointer2, LayoutGrid, ArrowLeft,
+  ShieldCheck, Zap, Crown, LogOut, Mail
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -18,12 +20,15 @@ export default function ProfilePage() {
     updateUserProfile, boardHistory
   } = useWhiteboardStore();
 
+  const { isAuthenticated, user, boardLimit, updatePlan, logout, openAuthModal } = useAuthStore();
+
   // Local Form State
-  const [name, setName] = useState(userName);
-  const [avatar, setAvatar] = useState(userAvatar);
+  const [name, setName] = useState(user?.name || userName);
+  const [avatar, setAvatar] = useState(user?.avatar || userAvatar);
   const [tagline, setTagline] = useState(userTagline);
   const [color, setColor] = useState(cursorColor);
   const [template, setTemplate] = useState<CanvasTemplate>(preferredTemplate || 'grid');
+  const [updatingPlan, setUpdatingPlan] = useState(false);
 
   const handleSave = () => {
     if (!name.trim()) {
@@ -41,6 +46,24 @@ export default function ProfilePage() {
 
     toast.success('Profile saved successfully!');
   };
+
+  const handlePlanChange = async (newPlan: 'free' | 'plus' | 'premium') => {
+    if (!isAuthenticated) {
+      openAuthModal('signup');
+      return;
+    }
+    setUpdatingPlan(true);
+    try {
+      await updatePlan(newPlan);
+      toast.success(`Plan updated to ${newPlan.toUpperCase()} (${newPlan === 'free' ? 3 : newPlan === 'plus' ? 10 : 20} boards)`);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to update plan');
+    } finally {
+      setUpdatingPlan(false);
+    }
+  };
+
+  const currentPlan = user?.plan || 'free';
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col">
@@ -62,7 +85,7 @@ export default function ProfilePage() {
                 Account Profile & Customization
               </h1>
               <p className="text-sm text-muted-foreground mt-0.5">
-                Customize your avatar, display name, cursor color, and canvas preferences.
+                Manage your account credentials, board limits, avatar, and canvas defaults.
               </p>
             </div>
           </div>
@@ -80,6 +103,102 @@ export default function ProfilePage() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Left Column: Form Controls */}
           <div className="lg:col-span-2 space-y-8">
+            {/* Account & Auth Status Card */}
+            <div className="p-6 rounded-2xl bg-card border border-border/80 shadow-xs space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-base font-bold text-foreground flex items-center gap-2">
+                  <Mail className="w-4 h-4 text-primary" />
+                  Account Authentication
+                </h2>
+                {isAuthenticated ? (
+                  <span className="px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-600 dark:text-emerald-400 text-xs font-bold">
+                    ✓ Logged In
+                  </span>
+                ) : (
+                  <span className="px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-400 text-xs font-bold">
+                    Guest Mode
+                  </span>
+                )}
+              </div>
+
+              {isAuthenticated ? (
+                <div className="flex items-center justify-between p-4 rounded-xl bg-accent/40 border border-border/60">
+                  <div>
+                    <p className="text-xs font-semibold text-muted-foreground">Logged in as</p>
+                    <p className="text-sm font-bold text-foreground">{user?.email}</p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    onClick={logout}
+                    className="rounded-xl text-xs font-semibold text-destructive hover:bg-destructive/10"
+                  >
+                    <LogOut className="w-3.5 h-3.5 mr-1" /> Log Out
+                  </Button>
+                </div>
+              ) : (
+                <div className="p-4 rounded-xl bg-accent/30 border border-border/60 flex items-center justify-between">
+                  <p className="text-xs text-muted-foreground">
+                    Sign in to save all your whiteboards to your persistent MongoDB database!
+                  </p>
+                  <Button
+                    onClick={() => openAuthModal('login')}
+                    className="rounded-xl text-xs font-semibold bg-primary text-primary-foreground"
+                  >
+                    Log In / Sign Up
+                  </Button>
+                </div>
+              )}
+            </div>
+
+            {/* Board Limit Subscription Plan Selector */}
+            <div className="p-6 rounded-2xl bg-card border border-border/80 shadow-xs space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-base font-bold text-foreground flex items-center gap-2">
+                  <Crown className="w-4 h-4 text-amber-500" />
+                  Subscription Plan & Board Limits
+                </h2>
+                <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">
+                  Current: {currentPlan} ({boardLimit.limit} boards)
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Choose a plan to fit your whiteboard workspace needs. Free allows 3 boards, Plus allows 10 boards, and Premium allows 20 boards.
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
+                {[
+                  { id: 'free', name: 'Free Plan', limit: '3 Boards', icon: ShieldCheck, color: 'text-slate-500' },
+                  { id: 'plus', name: 'Plus Plan', limit: '10 Boards', icon: Zap, color: 'text-indigo-500' },
+                  { id: 'premium', name: 'Premium Plan', limit: '20 Boards', icon: Crown, color: 'text-amber-500' },
+                ].map((p) => {
+                  const isSel = currentPlan === p.id;
+                  const Icon = p.icon;
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      disabled={updatingPlan}
+                      onClick={() => handlePlanChange(p.id as any)}
+                      className={`p-4 rounded-2xl border text-left flex flex-col justify-between gap-3 transition-all ${
+                        isSel
+                          ? 'border-primary bg-primary/10 shadow-sm'
+                          : 'border-border/60 hover:bg-accent/40'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <Icon className={`w-5 h-5 ${p.color}`} />
+                        {isSel && <Check className="w-4 h-4 text-primary font-bold" />}
+                      </div>
+                      <div>
+                        <span className="text-sm font-bold text-foreground block">{p.name}</span>
+                        <span className="text-xs font-bold text-primary mt-0.5 block">{p.limit} limit</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             {/* Display Name & Tagline */}
             <div className="p-6 rounded-2xl bg-card border border-border/80 shadow-xs space-y-4">
               <h2 className="text-base font-bold text-foreground flex items-center gap-2">
@@ -244,6 +363,10 @@ export default function ProfilePage() {
               <h3 className="text-sm font-bold text-foreground">Session Statistics</h3>
 
               <div className="space-y-3 text-xs">
+                <div className="flex justify-between py-2 border-b border-border/40">
+                  <span className="text-muted-foreground">Subscription Plan</span>
+                  <span className="font-bold text-primary capitalize">{currentPlan} ({boardLimit.limit} boards)</span>
+                </div>
                 <div className="flex justify-between py-2 border-b border-border/40">
                   <span className="text-muted-foreground">Saved Boards</span>
                   <span className="font-bold text-foreground">{boardHistory.length}</span>

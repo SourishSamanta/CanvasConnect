@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import Navbar from '@/components/layout/Navbar';
+import UpgradePlanModal from '@/components/auth/UpgradePlanModal';
 import { useWhiteboardStore, CanvasTemplate, BoardItem } from '@/stores/whiteboardStore';
+import { useAuthStore } from '@/stores/authStore';
 import { apiFetchRooms } from '@/lib/api';
 import {
-  Plus, Search, Star, Trash2, Edit3, Copy, ExternalLink, Clock,
-  Sparkles, Grid, CircleDot, FileText, Moon, LayoutGrid, Check, X
+  Plus, Search, Star, Trash2, Edit3, Copy, Clock,
+  Sparkles, Grid, CircleDot, FileText, Moon, LayoutGrid, Check, Crown, Zap, ShieldCheck
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -21,6 +23,8 @@ export default function DashboardPage() {
     removeBoardFromHistory, toggleBoardFavorite, updateBoardTitle,
   } = useWhiteboardStore();
 
+  const { user, boardLimit, setBoardLimitCount, openAuthModal, isAuthenticated } = useAuthStore();
+
   // State
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'all' | 'recent' | 'favorites'>('all');
@@ -28,6 +32,7 @@ export default function DashboardPage() {
 
   // New Board Modal
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [selectedTemplate, setSelectedTemplate] = useState<CanvasTemplate>('grid');
 
@@ -47,19 +52,22 @@ export default function DashboardPage() {
   // Sync rooms from backend REST API on mount
   useEffect(() => {
     apiFetchRooms().then((backendRooms) => {
-      if (Array.isArray(backendRooms) && backendRooms.length > 0) {
-        backendRooms.forEach((r) => {
-          saveBoardToHistory({
-            roomId: r.roomId,
-            name: r.name,
-            template: (r.template as CanvasTemplate) || 'grid',
-            createdAt: r.createdAt,
-            updatedAt: r.updatedAt,
+      if (Array.isArray(backendRooms)) {
+        if (backendRooms.length > 0) {
+          backendRooms.forEach((r) => {
+            saveBoardToHistory({
+              roomId: r.roomId,
+              name: r.name,
+              template: (r.template as CanvasTemplate) || 'grid',
+              createdAt: r.createdAt,
+              updatedAt: r.updatedAt,
+            });
           });
-        });
+        }
+        setBoardLimitCount(backendRooms.length);
       }
     });
-  }, []);
+  }, [setBoardLimitCount, saveBoardToHistory]);
 
   // Filtered boards
   const filteredBoards = boardHistory.filter((board) => {
@@ -86,7 +94,13 @@ export default function DashboardPage() {
       setNewTitle('');
       navigate(`/board/${roomId}`);
     } catch (err: any) {
-      toast.error(err.message || 'Failed to create board');
+      if (err.limitReached) {
+        setIsModalOpen(false);
+        setIsUpgradeModalOpen(true);
+        toast.error(err.message || 'Board limit reached for your plan!');
+      } else {
+        toast.error(err.message || 'Failed to create board');
+      }
     }
   };
 
@@ -155,6 +169,12 @@ export default function DashboardPage() {
     return `${Math.floor(diffSeconds / 86400)}d ago`;
   };
 
+  const userPlan = user?.plan || 'free';
+  const planLimits: Record<string, number> = { free: 3, plus: 10, premium: 20 };
+  const currentLimit = boardLimit.limit || planLimits[userPlan] || 3;
+  const usedCount = boardHistory.length;
+  const usagePercentage = Math.min(100, Math.round((usedCount / currentLimit) * 100));
+
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       <Navbar onOpenNewBoardModal={() => setIsModalOpen(true)} />
@@ -164,12 +184,12 @@ export default function DashboardPage() {
         <div className="relative rounded-3xl bg-gradient-to-r from-card via-card to-accent/40 border border-border/80 p-6 sm:p-8 shadow-sm overflow-hidden flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
           <div className="flex items-center gap-4">
             <div className="w-16 h-16 rounded-2xl bg-gradient-to-tr from-primary/20 via-indigo-500/20 to-purple-500/20 border border-border/60 flex items-center justify-center text-3xl shadow-inner">
-              {userAvatar}
+              {user?.avatar || userAvatar}
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="text-2xl sm:text-3xl font-extrabold text-foreground tracking-tight">
-                  Welcome back, {userName}!
+                  Welcome back, {user?.name || userName}!
                 </h1>
                 <Sparkles className="w-5 h-5 text-amber-400" />
               </div>
@@ -177,18 +197,49 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Stats Bar */}
-          <div className="flex items-center gap-4 sm:gap-6 bg-background/70 backdrop-blur-md p-3 px-5 rounded-2xl border border-border/60 self-stretch md:self-auto justify-around">
-            <div className="text-center">
-              <div className="text-xl font-bold text-foreground">{boardHistory.length}</div>
-              <div className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Total Boards</div>
-            </div>
-            <div className="w-px h-8 bg-border" />
-            <div className="text-center">
-              <div className="text-xl font-bold text-primary">
-                {boardHistory.filter(b => b.isFavorite).length}
+          {/* Stats Bar & Plan Usage Card */}
+          <div className="flex flex-col sm:flex-row items-center gap-4 bg-background/70 backdrop-blur-md p-4 rounded-2xl border border-border/60 self-stretch md:self-auto">
+            <div className="flex items-center gap-4 sm:gap-6 justify-around w-full sm:w-auto">
+              <div className="text-center">
+                <div className="text-xl font-bold text-foreground">{boardHistory.length}</div>
+                <div className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Total Boards</div>
               </div>
-              <div className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Favorites</div>
+              <div className="w-px h-8 bg-border" />
+              <div className="text-center">
+                <div className="text-xl font-bold text-primary">
+                  {boardHistory.filter(b => b.isFavorite).length}
+                </div>
+                <div className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">Favorites</div>
+              </div>
+            </div>
+
+            {/* Plan Limit Progress Bar */}
+            <div className="w-full sm:w-48 pl-0 sm:pl-4 sm:border-l border-border/60 flex flex-col gap-1.5 pt-2 sm:pt-0 border-t sm:border-t-0">
+              <div className="flex items-center justify-between text-xs font-bold">
+                <span className="capitalize flex items-center gap-1 text-foreground">
+                  {userPlan === 'premium' ? <Crown className="w-3.5 h-3.5 text-amber-500" /> : userPlan === 'plus' ? <Zap className="w-3.5 h-3.5 text-indigo-500" /> : <ShieldCheck className="w-3.5 h-3.5 text-slate-500" />}
+                  {userPlan} Plan
+                </span>
+                <span className={usedCount >= currentLimit ? 'text-destructive font-black' : 'text-muted-foreground'}>
+                  {usedCount} / {currentLimit}
+                </span>
+              </div>
+              {/* Progress bar line */}
+              <div className="w-full h-2 rounded-full bg-accent overflow-hidden">
+                <div
+                  style={{ width: `${usagePercentage}%` }}
+                  className={`h-full transition-all duration-500 rounded-full ${
+                    usedCount >= currentLimit ? 'bg-destructive' : usagePercentage > 70 ? 'bg-amber-500' : 'bg-primary'
+                  }`}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsUpgradeModalOpen(true)}
+                className="text-[10px] font-semibold text-primary hover:underline text-left mt-0.5"
+              >
+                {usedCount >= currentLimit ? '⚠️ Limit Reached — Upgrade Plan' : 'Change Plan Limits →'}
+              </button>
             </div>
           </div>
         </div>
@@ -477,6 +528,12 @@ export default function DashboardPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Upgrade Plan Modal */}
+      <UpgradePlanModal
+        isOpen={isUpgradeModalOpen}
+        onClose={() => setIsUpgradeModalOpen(false)}
+      />
     </div>
   );
 }

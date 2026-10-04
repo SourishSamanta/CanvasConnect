@@ -5,6 +5,7 @@ const cors           = require('cors');
 const WebSocket      = require('ws');
 const connectDB      = require('./config/db');
 const roomRoutes     = require('./routes/rooms');
+const authRoutes     = require('./routes/auth');
 const setupYjsWebSocket = require('./ws/yjsHandler');
 
 const app    = express();
@@ -16,6 +17,7 @@ app.use(express.json());
 
 // REST routes
 app.use('/api/rooms', roomRoutes);
+app.use('/api/auth', authRoutes);
 
 // Health check
 app.get('/', (req, res) => res.send('Whiteboard server running'));

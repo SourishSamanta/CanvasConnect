@@ -80,6 +80,44 @@ export function yjsAddStroke(stroke: Stroke) {
   yStrokes?.push([stroke]);
 }
 
+// Called when a stroke/element is moved or modified
+export function yjsUpdateStroke(stroke: Stroke) {
+  if (!yStrokes || !doc) return;
+  const arr = yStrokes.toArray();
+  const index = arr.findIndex((s) => s.id === stroke.id);
+  if (index !== -1) {
+    doc.transact(() => {
+      yStrokes!.delete(index, 1);
+      yStrokes!.insert(index, [stroke]);
+    });
+  }
+}
+
+// Called when multiple strokes are moved/modified simultaneously
+export function yjsUpdateStrokes(strokesToUpdate: Stroke[]) {
+  if (!yStrokes || !doc || strokesToUpdate.length === 0) return;
+  const updateMap = new Map(strokesToUpdate.map((s) => [s.id, s]));
+  const arr = yStrokes.toArray();
+  doc.transact(() => {
+    for (let i = 0; i < arr.length; i++) {
+      const s = arr[i];
+      if (updateMap.has(s.id)) {
+        yStrokes!.delete(i, 1);
+        yStrokes!.insert(i, [updateMap.get(s.id)!]);
+      }
+    }
+  });
+}
+
+// Called when strokes array is replaced (e.g. real eraser trimming/deletion)
+export function yjsSetStrokes(newStrokes: Stroke[]) {
+  if (!yStrokes || !doc) return;
+  doc.transact(() => {
+    yStrokes!.delete(0, yStrokes!.length);
+    yStrokes!.insert(0, newStrokes);
+  });
+}
+
 // Called by Toolbar undo button
 export function yjsUndo() {
   undoManager?.undo();

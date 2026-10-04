@@ -2,39 +2,72 @@ const express = require('express');
 const router  = express.Router();
 const Room    = require('../models/Room');
 const { v4: uuidv4 } = require('uuid');
+const { optionalAuth, auth } = require('../middleware/auth');
 
-// GET /api/rooms — list recent rooms
-router.get('/', async (req, res) => {
+const PLAN_LIMITS = {
+  free: 3,
+  plus: 10,
+  premium: 20,
+};
+
+// GET /api/rooms — list user's rooms (or recent rooms if guest)
+router.get('/', optionalAuth, async (req, res) => {
   try {
-    const rooms = await Room.find().sort({ updatedAt: -1 }).limit(50);
+    let query = {};
+    if (req.user) {
+      // Return rooms owned by logged in user
+      query = { owner: req.user._id };
+    }
+    const rooms = await Room.find(query).sort({ updatedAt: -1 }).limit(100);
     res.json(rooms);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// POST /api/rooms — create a new room
-router.post('/', async (req, res) => {
+// POST /api/rooms — create a new room with plan limit checking
+router.post('/', optionalAuth, async (req, res) => {
   try {
     const { name, description, template, username, avatar, color } = req.body;
+
+    let ownerId = null;
+    if (req.user) {
+      ownerId = req.user._id;
+      const userPlan = req.user.plan || 'free';
+      const limit = PLAN_LIMITS[userPlan] || 3;
+      const currentCount = await Room.countDocuments({ owner: ownerId });
+
+      if (currentCount >= limit) {
+        return res.status(403).json({
+          error: `Board limit reached (${currentCount}/${limit}) for your ${userPlan.toUpperCase()} plan. Upgrade your plan to create more boards.`,
+          limitReached: true,
+          plan: userPlan,
+          limit,
+          currentCount,
+        });
+      }
+    }
+
     const roomId = uuidv4().slice(0, 8).toUpperCase();
 
     const room = await Room.create({
       roomId,
+      owner: ownerId,
       name: name || 'Untitled Room',
       description: description || '',
       template: template || 'grid',
       users: username ? [{ username, avatar: avatar || '🐱', color: color || '#1971c2' }] : [],
-      updatedAt: new Date()
+      updatedAt: new Date(),
     });
 
     res.status(201).json({
       roomId: room.roomId,
+      owner: room.owner,
       name: room.name,
       description: room.description,
       template: room.template,
       createdAt: room.createdAt,
-      updatedAt: room.updatedAt
+      updatedAt: room.updatedAt,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -48,12 +81,14 @@ router.get('/:roomId', async (req, res) => {
     if (!room) return res.status(404).json({ error: 'Room not found' });
     res.json({
       roomId: room.roomId,
+      owner: room.owner,
       name: room.name,
       description: room.description,
       template: room.template,
+      isFavorite: room.isFavorite,
       userCount: room.users ? room.users.length : 0,
       createdAt: room.createdAt,
-      updatedAt: room.updatedAt
+      updatedAt: room.updatedAt,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -61,13 +96,14 @@ router.get('/:roomId', async (req, res) => {
 });
 
 // PATCH /api/rooms/:roomId — update room title, template, or metadata
-router.patch('/:roomId', async (req, res) => {
+router.patch('/:roomId', optionalAuth, async (req, res) => {
   try {
-    const { name, template, strokeCount } = req.body;
+    const { name, template, strokeCount, isFavorite } = req.body;
     const updateData = { updatedAt: new Date() };
     if (name !== undefined) updateData.name = name;
     if (template !== undefined) updateData.template = template;
     if (strokeCount !== undefined) updateData.strokeCount = strokeCount;
+    if (isFavorite !== undefined) updateData.isFavorite = isFavorite;
 
     const room = await Room.findOneAndUpdate(
       { roomId: req.params.roomId.toUpperCase() },
@@ -82,7 +118,7 @@ router.patch('/:roomId', async (req, res) => {
 });
 
 // DELETE /api/rooms/:roomId — delete room
-router.delete('/:roomId', async (req, res) => {
+router.delete('/:roomId', optionalAuth, async (req, res) => {
   try {
     const room = await Room.findOneAndDelete({ roomId: req.params.roomId.toUpperCase() });
     if (!room) return res.status(404).json({ error: 'Room not found' });

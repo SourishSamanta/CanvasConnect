@@ -1,11 +1,11 @@
 import { create } from 'zustand';
 import { apiCreateRoom, apiGetRoom, apiUpdateRoom, apiDeleteRoom, RoomMeta } from '@/lib/api';
 import {
-  yjsConnect, yjsDisconnect, yjsAddStroke,
+  yjsConnect, yjsDisconnect, yjsAddStroke, yjsUpdateStroke, yjsUpdateStrokes, yjsSetStrokes,
   yjsUndo, yjsRedo, yjsClearCanvas,
 } from '@/hooks/useWhiteboard';
 
-export type Tool = 'pen' | 'eraser';
+export type Tool = 'select' | 'pen' | 'eraser' | 'rectangle' | 'circle' | 'line' | 'arrow';
 export type Theme = 'light' | 'dark';
 export type CanvasTemplate = 'grid' | 'dots' | 'blank' | 'dark';
 
@@ -118,6 +118,7 @@ interface WhiteboardState {
   brushSize: number;
   strokes: Stroke[];
   currentStroke: Stroke | null;
+  selectedStrokeIds: string[];
   undoStack: Stroke[][];
   redoStack: Stroke[][];
 
@@ -141,6 +142,11 @@ interface WhiteboardState {
   setTool: (t: Tool) => void;
   setColor: (c: string) => void;
   setBrushSize: (s: number) => void;
+  setSelectedStrokeIds: (ids: string[]) => void;
+  updateStroke: (stroke: Stroke) => void;
+  updateStrokes: (strokes: Stroke[]) => void;
+  setStrokes: (strokes: Stroke[]) => void;
+  eraseAtPoint: (center: Point, radius: number) => boolean;
   startStroke: (p: Point) => void;
   addPoint: (p: Point) => void;
   endStroke: () => void;
@@ -191,6 +197,7 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
   brushSize: 3,
   strokes: [],
   currentStroke: null,
+  selectedStrokeIds: [],
   undoStack: [[]],
   redoStack: [],
 
@@ -298,18 +305,122 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
 
   // ─── Drawing Controls ─────────────────────────────────────────────────────
 
-  setTool: (tool) => set({ tool }),
+  setTool: (tool) => {
+    set({ tool });
+    if (tool !== 'select') {
+      set({ selectedStrokeIds: [] });
+    }
+  },
   setColor: (color) => set({ color }),
   setBrushSize: (brushSize) => set({ brushSize }),
+  setSelectedStrokeIds: (selectedStrokeIds) => set({ selectedStrokeIds }),
+  updateStroke: (updatedStroke) => {
+    set((state) => ({
+      strokes: state.strokes.map((s) => (s.id === updatedStroke.id ? updatedStroke : s)),
+    }));
+    yjsUpdateStroke(updatedStroke);
+  },
+  setStrokes: (strokes) => {
+    set({ strokes });
+    yjsSetStrokes(strokes);
+  },
+  eraseAtPoint: (center, radius) => {
+    const { strokes } = get();
+    let modified = false;
+    const newStrokes: Stroke[] = [];
+
+    function distToSegment(p: Point, v: Point, w: Point) {
+      const l2 = (w.x - v.x) ** 2 + (w.y - v.y) ** 2;
+      if (l2 === 0) return Math.hypot(p.x - v.x, p.y - v.y);
+      let t = ((p.x - v.x) * (w.x - v.x) + (p.y - v.y) * (w.y - v.y)) / l2;
+      t = Math.max(0, Math.min(1, t));
+      return Math.hypot(p.x - (v.x + t * (w.x - v.x)), p.y - (v.y + t * (w.y - v.y)));
+    }
+
+    for (const stroke of strokes) {
+      if (stroke.tool === 'eraser') continue; // Purge any legacy mask strokes
+
+      const isShape =
+        stroke.tool === 'rectangle' ||
+        stroke.tool === 'circle' ||
+        stroke.tool === 'line' ||
+        stroke.tool === 'arrow';
+
+      if (isShape) {
+        const pts = stroke.points;
+        let touched = false;
+        if (pts.length >= 1 && Math.hypot(pts[0].x - center.x, pts[0].y - center.y) <= radius) {
+          touched = true;
+        } else if (pts.length >= 2) {
+          if (stroke.tool === 'circle') {
+            const r = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+            const dist = Math.hypot(center.x - pts[0].x, center.y - pts[0].y);
+            if (Math.abs(dist - r) <= radius || dist <= radius) touched = true;
+          } else {
+            if (distToSegment(center, pts[0], pts[1]) <= radius) touched = true;
+          }
+        }
+
+        if (touched) {
+          modified = true;
+        } else {
+          newStrokes.push(stroke);
+        }
+      } else {
+        // Freehand pen stroke trimming
+        const segments: Point[][] = [];
+        let currentSeg: Point[] = [];
+
+        for (const pt of stroke.points) {
+          const dist = Math.hypot(pt.x - center.x, pt.y - center.y);
+          if (dist > radius) {
+            currentSeg.push(pt);
+          } else {
+            if (currentSeg.length >= 2) {
+              segments.push(currentSeg);
+            }
+            currentSeg = [];
+          }
+        }
+        if (currentSeg.length >= 2) {
+          segments.push(currentSeg);
+        }
+
+        if (segments.length === 1 && segments[0].length === stroke.points.length) {
+          newStrokes.push(stroke);
+        } else {
+          modified = true;
+          for (let i = 0; i < segments.length; i++) {
+            newStrokes.push({
+              ...stroke,
+              id: i === 0 ? stroke.id : generateId(),
+              points: segments[i],
+            });
+          }
+        }
+      }
+    }
+
+    if (modified) {
+      set({ strokes: newStrokes });
+      yjsSetStrokes(newStrokes);
+    }
+    return modified;
+  },
 
   startStroke: (point) => {
     const { tool, color, brushSize } = get();
+    if (tool === 'select' || tool === 'eraser') return;
+
+    const isShape = tool === 'rectangle' || tool === 'circle' || tool === 'line' || tool === 'arrow';
+    const points = isShape ? [point, point] : [point];
+
     set({
       currentStroke: {
         id: generateId(),
-        points: [point],
-        color: tool === 'eraser' ? 'eraser' : color,
-        size: tool === 'eraser' ? brushSize * 4 : brushSize,
+        points,
+        color: color,
+        size: brushSize,
         tool,
       },
     });
@@ -318,7 +429,16 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
   addPoint: (point) => {
     const { currentStroke } = get();
     if (!currentStroke) return;
-    set({ currentStroke: { ...currentStroke, points: [...currentStroke.points, point] } });
+    const isShape =
+      currentStroke.tool === 'rectangle' ||
+      currentStroke.tool === 'circle' ||
+      currentStroke.tool === 'line' ||
+      currentStroke.tool === 'arrow';
+    if (isShape) {
+      set({ currentStroke: { ...currentStroke, points: [currentStroke.points[0], point] } });
+    } else {
+      set({ currentStroke: { ...currentStroke, points: [...currentStroke.points, point] } });
+    }
   },
 
   endStroke: () => {
@@ -465,6 +585,7 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
   toggleTheme: () => {
     const newTheme = get().theme === 'light' ? 'dark' : 'light';
     document.documentElement.classList.toggle('dark', newTheme === 'dark');
-    set({ theme: newTheme });
+    const defaultThemeColor = newTheme === 'light' ? '#1e1e1e' : '#ffffff';
+    set({ theme: newTheme, color: defaultThemeColor });
   },
 }));
