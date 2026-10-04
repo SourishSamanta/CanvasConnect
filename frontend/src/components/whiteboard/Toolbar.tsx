@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import {
   GripVertical,
   MousePointer2,
+  Hand,
   Pencil,
   Eraser,
   Undo2,
@@ -12,9 +13,18 @@ import {
   Minus,
   MoveRight,
   Shapes,
+  Type,
+  StickyNote,
+  Sparkles,
   ChevronDown,
+  Copy,
 } from 'lucide-react';
-import { useWhiteboardStore, AVAILABLE_COLORS, Tool } from '@/stores/whiteboardStore';
+import {
+  useWhiteboardStore,
+  AVAILABLE_COLORS,
+  AVAILABLE_NOTE_COLORS,
+  Tool,
+} from '@/stores/whiteboardStore';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import {
@@ -35,13 +45,18 @@ export default function Toolbar() {
     setTool,
     color,
     setColor,
+    fillColor,
+    setFillColor,
     brushSize,
     setBrushSize,
     undo,
     redo,
     clearCanvas,
-    undoStack,
-    redoStack,
+    canUndo,
+    canRedo,
+    selectedStrokeIds,
+    deleteSelectedStrokes,
+    duplicateSelectedStrokes,
     theme,
   } = useWhiteboardStore();
 
@@ -168,6 +183,24 @@ export default function Toolbar() {
         <TooltipContent>Select & Move</TooltipContent>
       </Tooltip>
 
+      {/* Hand / Pan Tool */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={() => setTool('hand')}
+            className={cn(
+              'p-1.5 rounded-xl transition-all duration-150 shrink-0',
+              tool === 'hand'
+                ? 'bg-primary text-primary-foreground shadow-sm scale-105'
+                : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+            )}
+          >
+            <Hand size={16} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>Hand (Pan Canvas)</TooltipContent>
+      </Tooltip>
+
       {/* Pen Tool */}
       <Tooltip>
         <TooltipTrigger asChild>
@@ -242,9 +275,63 @@ export default function Toolbar() {
         </DropdownMenuContent>
       </DropdownMenu>
 
+      {/* Text Tool */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={() => setTool('text')}
+            className={cn(
+              'p-1.5 rounded-xl transition-all duration-150 shrink-0',
+              tool === 'text'
+                ? 'bg-primary text-primary-foreground shadow-sm scale-105'
+                : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+            )}
+          >
+            <Type size={16} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>Text Tool</TooltipContent>
+      </Tooltip>
+
+      {/* Sticky Note Tool */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={() => setTool('note')}
+            className={cn(
+              'p-1.5 rounded-xl transition-all duration-150 shrink-0',
+              tool === 'note'
+                ? 'bg-primary text-primary-foreground shadow-sm scale-105'
+                : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+            )}
+          >
+            <StickyNote size={16} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>Sticky Note</TooltipContent>
+      </Tooltip>
+
+      {/* Laser Pointer Tool */}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={() => setTool('laser')}
+            className={cn(
+              'p-1.5 rounded-xl transition-all duration-150 shrink-0',
+              tool === 'laser'
+                ? 'bg-primary text-primary-foreground shadow-sm scale-105'
+                : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+            )}
+          >
+            <Sparkles size={16} />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>Laser Pointer</TooltipContent>
+      </Tooltip>
+
       <div className="w-px h-4 bg-border/80 mx-0.5 shrink-0" />
 
-      {/* Line Width Dropdown Selector (Replaces Range Slider) */}
+      {/* Line Width Selector */}
       <DropdownMenu>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -280,29 +367,81 @@ export default function Toolbar() {
 
       <div className="w-px h-4 bg-border/80 mx-0.5 shrink-0" />
 
-      {/* Color Palette */}
-      <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
-        {visibleColors.map((c) => (
-          <Tooltip key={c}>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => {
-                  setColor(c);
-                  if (tool === 'eraser' || tool === 'select') setTool('pen');
-                }}
-                className={cn(
-                  'w-4 h-4 sm:w-5 sm:h-5 rounded-full border transition-all duration-150 hover:scale-110 shrink-0',
-                  color === c && tool !== 'eraser' && tool !== 'select'
-                    ? 'border-primary ring-2 ring-primary/30 scale-110'
-                    : 'border-transparent'
-                )}
-                style={{ backgroundColor: c }}
-              />
-            </TooltipTrigger>
-            <TooltipContent>Color ({c})</TooltipContent>
-          </Tooltip>
-        ))}
-      </div>
+      {/* Color Palette / Sticky Note Color Picker */}
+      {tool === 'note' ? (
+        <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
+          {AVAILABLE_NOTE_COLORS.map((nc) => (
+            <Tooltip key={nc}>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => setFillColor(nc)}
+                  className={cn(
+                    'w-4 h-4 sm:w-5 sm:h-5 rounded-full border transition-all duration-150 hover:scale-110 shrink-0',
+                    fillColor === nc ? 'ring-2 ring-primary scale-110' : 'border-transparent'
+                  )}
+                  style={{ backgroundColor: nc }}
+                />
+              </TooltipTrigger>
+              <TooltipContent>Note Color</TooltipContent>
+            </Tooltip>
+          ))}
+        </div>
+      ) : (
+        <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
+          {visibleColors.map((c) => (
+            <Tooltip key={c}>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={() => {
+                    setColor(c);
+                    if (tool === 'eraser' || tool === 'select' || tool === 'hand') setTool('pen');
+                  }}
+                  className={cn(
+                    'w-4 h-4 sm:w-5 sm:h-5 rounded-full border transition-all duration-150 hover:scale-110 shrink-0',
+                    color === c && tool !== 'eraser' && tool !== 'select' && tool !== 'hand'
+                      ? 'border-primary ring-2 ring-primary/30 scale-110'
+                      : 'border-transparent'
+                  )}
+                  style={{ backgroundColor: c }}
+                />
+              </TooltipTrigger>
+              <TooltipContent>Color ({c})</TooltipContent>
+            </Tooltip>
+          ))}
+        </div>
+      )}
+
+      {/* Selected Items Quick Actions Bar */}
+      {selectedStrokeIds.length > 0 && (
+        <>
+          <div className="w-px h-4 bg-border/80 mx-0.5 shrink-0" />
+          <div className="flex items-center gap-0.5 shrink-0">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={duplicateSelectedStrokes}
+                  className="p-1.5 rounded-xl text-muted-foreground hover:bg-accent hover:text-foreground transition-all shrink-0"
+                >
+                  <Copy size={16} />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Duplicate Selected (Ctrl+D)</TooltipContent>
+            </Tooltip>
+
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  onClick={deleteSelectedStrokes}
+                  className="p-1.5 rounded-xl text-destructive hover:bg-destructive/10 transition-all shrink-0"
+                >
+                  <Trash2 size={16} />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Delete Selected (Del)</TooltipContent>
+            </Tooltip>
+          </div>
+        </>
+      )}
 
       <div className="w-px h-4 bg-border/80 mx-0.5 shrink-0" />
 
@@ -312,7 +451,7 @@ export default function Toolbar() {
           <TooltipTrigger asChild>
             <button
               onClick={undo}
-              disabled={undoStack.length === 0}
+              disabled={!canUndo}
               className="p-1.5 rounded-xl text-muted-foreground hover:bg-accent hover:text-foreground transition-all disabled:opacity-30 shrink-0"
             >
               <Undo2 size={16} />
@@ -325,7 +464,7 @@ export default function Toolbar() {
           <TooltipTrigger asChild>
             <button
               onClick={redo}
-              disabled={redoStack.length === 0}
+              disabled={!canRedo}
               className="p-1.5 rounded-xl text-muted-foreground hover:bg-accent hover:text-foreground transition-all disabled:opacity-30 shrink-0"
             >
               <Redo2 size={16} />

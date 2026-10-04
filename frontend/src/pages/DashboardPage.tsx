@@ -49,25 +49,42 @@ export default function DashboardPage() {
     }
   }, [searchParams, setSearchParams]);
 
-  // Sync rooms from backend REST API on mount
+  // Sync rooms from backend REST API on mount / auth change
   useEffect(() => {
-    apiFetchRooms().then((backendRooms) => {
-      if (Array.isArray(backendRooms)) {
-        if (backendRooms.length > 0) {
-          backendRooms.forEach((r) => {
-            saveBoardToHistory({
-              roomId: r.roomId,
-              name: r.name,
-              template: (r.template as CanvasTemplate) || 'grid',
-              createdAt: r.createdAt,
-              updatedAt: r.updatedAt,
-            });
-          });
+    if (!isAuthenticated) {
+      const raw = localStorage.getItem('canvasconnect_user_boards');
+      if (raw) {
+        try {
+          const guestBoards = JSON.parse(raw);
+          useWhiteboardStore.setState({ boardHistory: guestBoards });
+          setBoardLimitCount(guestBoards.length);
+        } catch {
+          useWhiteboardStore.setState({ boardHistory: [] });
+          setBoardLimitCount(0);
         }
-        setBoardLimitCount(backendRooms.length);
+      } else {
+        useWhiteboardStore.setState({ boardHistory: [] });
+        setBoardLimitCount(0);
       }
-    });
-  }, [setBoardLimitCount, saveBoardToHistory]);
+    } else {
+      apiFetchRooms().then((backendRooms) => {
+        if (Array.isArray(backendRooms)) {
+          const userBoards: BoardItem[] = backendRooms.map((r) => ({
+            id: r.roomId,
+            roomId: r.roomId,
+            name: r.name,
+            template: (r.template as CanvasTemplate) || 'grid',
+            createdAt: r.createdAt || new Date().toISOString(),
+            updatedAt: r.updatedAt || new Date().toISOString(),
+            strokeCount: r.strokeCount || 0,
+            isFavorite: r.isFavorite || false,
+          }));
+          useWhiteboardStore.setState({ boardHistory: userBoards });
+          setBoardLimitCount(backendRooms.length);
+        }
+      });
+    }
+  }, [isAuthenticated, setBoardLimitCount]);
 
   // Filtered boards
   const filteredBoards = boardHistory.filter((board) => {

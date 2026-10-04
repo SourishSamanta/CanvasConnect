@@ -70,6 +70,63 @@ function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke, theme: string
     ctx.lineTo(p1.x, p1.y);
     ctx.stroke();
     drawArrowHead(ctx, p0, p1, stroke.size);
+  } else if (stroke.tool === 'text') {
+    const p0 = pts[0];
+    const fontSize = stroke.fontSize || 18;
+    ctx.font = `600 ${fontSize}px Inter, sans-serif`;
+    ctx.fillStyle = getEffectiveColor(stroke.color, theme);
+    ctx.textBaseline = 'top';
+    const lines = (stroke.text || 'Type text...').split('\n');
+    lines.forEach((line, index) => {
+      ctx.fillText(line, p0.x, p0.y + index * (fontSize * 1.25));
+    });
+  } else if (stroke.tool === 'note') {
+    const p0 = pts[0];
+    const w = 160;
+    const h = 140;
+    ctx.save();
+    ctx.fillStyle = stroke.fillColor || '#fef08a';
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.18)';
+    ctx.shadowBlur = 10;
+    ctx.shadowOffsetY = 4;
+    ctx.beginPath();
+    ctx.roundRect ? ctx.roundRect(p0.x, p0.y, w, h, 12) : ctx.rect(p0.x, p0.y, w, h);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.strokeStyle = 'rgba(0,0,0,0.12)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(p0.x, p0.y, w, h);
+
+    const fontSize = stroke.fontSize || 14;
+    ctx.font = `500 ${fontSize}px Inter, sans-serif`;
+    ctx.fillStyle = '#1e293b';
+    ctx.textBaseline = 'top';
+    const lines = (stroke.text || 'Sticky note...').split('\n');
+    lines.forEach((line, index) => {
+      if (index * (fontSize * 1.25) < h - 24) {
+        ctx.fillText(line, p0.x + 12, p0.y + 12 + index * (fontSize * 1.25), w - 24);
+      }
+    });
+  } else if (stroke.tool === 'laser') {
+    if (pts.length < 1) return;
+    ctx.save();
+    ctx.strokeStyle = '#ef4444';
+    ctx.shadowColor = '#ef4444';
+    ctx.shadowBlur = 12;
+    ctx.lineWidth = stroke.size * 2.5;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) {
+      ctx.lineTo(pts[i].x, pts[i].y);
+    }
+    ctx.stroke();
+    const last = pts[pts.length - 1];
+    ctx.beginPath();
+    ctx.arc(last.x, last.y, 6, 0, Math.PI * 2);
+    ctx.fillStyle = '#fca5a5';
+    ctx.fill();
+    ctx.restore();
   } else {
     // Freehand Pen
     if (pts.length < 2) {
@@ -118,6 +175,25 @@ function isPointNearStroke(p: Point, stroke: Stroke, zoom: number): boolean {
     return p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY;
   }
 
+  if (stroke.tool === 'text') {
+    const p0 = pts[0];
+    const fontSize = stroke.fontSize || 18;
+    const minX = p0.x - threshold;
+    const maxX = p0.x + 180 + threshold;
+    const minY = p0.y - threshold;
+    const maxY = p0.y + fontSize * 2 + threshold;
+    return p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY;
+  }
+
+  if (stroke.tool === 'note') {
+    const p0 = pts[0];
+    const minX = p0.x - threshold;
+    const maxX = p0.x + 160 + threshold;
+    const minY = p0.y - threshold;
+    const maxY = p0.y + 140 + threshold;
+    return p.x >= minX && p.x <= maxX && p.y >= minY && p.y <= maxY;
+  }
+
   if (stroke.tool === 'circle') {
     const center = pts[0];
     const edge = pts.length > 1 ? pts[1] : pts[0];
@@ -142,14 +218,13 @@ function getStrokeBounds(stroke: Stroke) {
     const cx = pts[0].x;
     const cy = pts[0].y;
     const r = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
-    return {
-      minX: cx - r,
-      minY: cy - r,
-      maxX: cx + r,
-      maxY: cy + r,
-      width: r * 2,
-      height: r * 2,
-    };
+    return { minX: cx - r, minY: cy - r, maxX: cx + r, maxY: cy + r, width: r * 2, height: r * 2 };
+  }
+  if (stroke.tool === 'note' && pts.length >= 1) {
+    return { minX: pts[0].x, minY: pts[0].y, maxX: pts[0].x + 160, maxY: pts[0].y + 140, width: 160, height: 140 };
+  }
+  if (stroke.tool === 'text' && pts.length >= 1) {
+    return { minX: pts[0].x, minY: pts[0].y, maxX: pts[0].x + 180, maxY: pts[0].y + 40, width: 180, height: 40 };
   }
 
   let minX = Infinity;
@@ -204,6 +279,9 @@ export default function Canvas() {
 
   const [marqueeBox, setMarqueeBox] = useState<{ start: Point; current: Point } | null>(null);
 
+  // Inline Text Editing State
+  const [editingState, setEditingState] = useState<{ id: string; text: string; x: number; y: number } | null>(null);
+
   // Mobile Touch Gestures
   const touchStartDist = useRef<number | null>(null);
   const touchStartZoom = useRef<number>(1);
@@ -219,6 +297,7 @@ export default function Canvas() {
     endStroke,
     setSelectedStrokeIds,
     updateStrokes,
+    updateStrokeText,
     eraseAtPoint,
     brushSize,
     tool,
@@ -300,11 +379,11 @@ export default function Canvas() {
       offscreenCtx.restore();
     }
 
-    // 3. Composite Offscreen Canvas onto Main Canvas (IDENTITY TRANSFORM)
+    // 3. Composite Offscreen Canvas onto Main Canvas
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.drawImage(offscreen, 0, 0, w, h);
 
-    // 4. Render Overlays in Canvas Coordinates (Selection Box & Eraser Ring)
+    // 4. Render Overlays in Canvas Coordinates
     ctx.save();
     ctx.translate(panX, panY);
     ctx.scale(zoom, zoom);
@@ -339,7 +418,7 @@ export default function Canvas() {
         ctx.setLineDash([6 / zoom, 6 / zoom]);
         ctx.strokeRect(bx, by, bw, bh);
 
-        // Draw Handles
+        // Handles
         ctx.setLineDash([]);
         ctx.fillStyle = '#ffffff';
         const hs = 6 / zoom;
@@ -391,12 +470,35 @@ export default function Canvas() {
     render();
   }, [render]);
 
-  // Spacebar pan toggle
+  // Spacebar pan toggle & Keyboard shortcuts
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
+      const activeEl = document.activeElement;
+      if (activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
+        return;
+      }
       if (e.code === 'Space' && !e.repeat) {
         e.preventDefault();
         spaceDown.current = true;
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        const { deleteSelectedStrokes, selectedStrokeIds } = useWhiteboardStore.getState();
+        if (selectedStrokeIds.length > 0) {
+          e.preventDefault();
+          deleteSelectedStrokes();
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
+        e.preventDefault();
+        useWhiteboardStore.getState().duplicateSelectedStrokes();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          useWhiteboardStore.getState().redo();
+        } else {
+          useWhiteboardStore.getState().undo();
+        }
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        useWhiteboardStore.getState().redo();
       }
     };
     const up = (e: KeyboardEvent) => {
@@ -410,7 +512,7 @@ export default function Canvas() {
     };
   }, []);
 
-  // Touchpad Two-Finger Pan & Pinch Zoom Handling
+  // Wheel Pan & Pinch Zoom
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -422,14 +524,12 @@ export default function Canvas() {
       const my = e.clientY - rect.top;
 
       if (e.ctrlKey) {
-        // Pinch Zoom / Ctrl + Wheel Zoom
         const delta = -e.deltaY * 0.0015;
         const newZoom = Math.min(5, Math.max(0.1, zoom * (1 + delta)));
         const scale = newZoom / zoom;
         setPan(mx - (mx - panX) * scale, my - (my - panY) * scale);
         setZoom(newZoom);
       } else {
-        // Touchpad Two-finger Pan / Mouse Wheel Scroll
         setPan(panX - e.deltaX, panY - e.deltaY);
       }
     };
@@ -437,7 +537,7 @@ export default function Canvas() {
     return () => canvas.removeEventListener('wheel', onWheel);
   }, []);
 
-  // Mobile Touch Gestures (Pinch zoom & 2-finger pan)
+  // Mobile Touch Gestures
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -495,7 +595,9 @@ export default function Canvas() {
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (e.button === 1 || (e.button === 0 && spaceDown.current)) {
+    if (editingState) setEditingState(null);
+
+    if (e.button === 1 || (e.button === 0 && (spaceDown.current || tool === 'hand'))) {
       isPanning.current = true;
       lastPan.current = { x: e.clientX, y: e.clientY };
       canvasRef.current?.setPointerCapture(e.pointerId);
@@ -504,7 +606,6 @@ export default function Canvas() {
 
     const canvasPoint = screenToCanvas(e);
 
-    // Real Eraser Handler: Directly trim/delete strokes underneath
     if (tool === 'eraser') {
       isErasing.current = true;
       const { brushSize, zoom, eraseAtPoint } = useWhiteboardStore.getState();
@@ -532,10 +633,7 @@ export default function Canvas() {
         const map = new Map<string, Point[]>();
         for (const s of strokes) {
           if (selectedStrokeIds.includes(s.id)) {
-            map.set(
-              s.id,
-              s.points.map((pt) => ({ ...pt }))
-            );
+            map.set(s.id, s.points.map((pt) => ({ ...pt })));
           }
         }
         initialGroupPoints.current = map;
@@ -564,10 +662,7 @@ export default function Canvas() {
         const map = new Map<string, Point[]>();
         for (const s of strokes) {
           if (newIds.includes(s.id)) {
-            map.set(
-              s.id,
-              s.points.map((pt) => ({ ...pt }))
-            );
+            map.set(s.id, s.points.map((pt) => ({ ...pt })));
           }
         }
         initialGroupPoints.current = map;
@@ -647,7 +742,7 @@ export default function Canvas() {
     }
 
     if (!isDrawing.current) {
-      if (tool === 'eraser') render();
+      if (tool === 'eraser' || tool === 'laser') render();
       return;
     }
     addPoint(canvasPoint);
@@ -671,13 +766,54 @@ export default function Canvas() {
       isDraggingGroup.current = false;
       return;
     }
-    isDrawing.current = false;
-    endStroke();
+    if (isDrawing.current) {
+      isDrawing.current = false;
+      const activeTool = tool;
+      endStroke();
+
+      // If text or note tool was used, trigger inline editing on the new stroke
+      if (activeTool === 'text' || activeTool === 'note') {
+        setTimeout(() => {
+          const latestStrokes = useWhiteboardStore.getState().strokes;
+          if (latestStrokes.length > 0) {
+            const newStroke = latestStrokes[latestStrokes.length - 1];
+            if (newStroke.points.length > 0) {
+              const pt = newStroke.points[0];
+              setEditingState({
+                id: newStroke.id,
+                text: newStroke.text || '',
+                x: pt.x * zoom + panX,
+                y: pt.y * zoom + panY,
+              });
+            }
+          }
+        }, 50);
+      }
+    }
+  };
+
+  const handleDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const pt = screenToCanvas(e);
+    for (let i = strokes.length - 1; i >= 0; i--) {
+      const stroke = strokes[i];
+      if ((stroke.tool === 'text' || stroke.tool === 'note') && isPointNearStroke(pt, stroke, zoom)) {
+        const screenX = stroke.points[0].x * zoom + panX;
+        const screenY = stroke.points[0].y * zoom + panY;
+        setEditingState({
+          id: stroke.id,
+          text: stroke.text || '',
+          x: screenX,
+          y: screenY,
+        });
+        break;
+      }
+    }
   };
 
   const getCursorStyle = () => {
-    if (spaceDown.current) return 'grab';
+    if (spaceDown.current || tool === 'hand') return isPanning.current ? 'grabbing' : 'grab';
     if (tool === 'eraser') return 'none';
+    if (tool === 'laser') return 'crosshair';
     if (tool === 'select') {
       if (isDraggingGroup.current) return 'grabbing';
       if (isMarqueeSelecting.current) return 'crosshair';
@@ -695,6 +831,7 @@ export default function Canvas() {
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onDoubleClick={handleDoubleClick}
         onPointerLeave={() => {
           yjsClearCursor();
           mouseCanvasPos.current = null;
@@ -702,6 +839,30 @@ export default function Canvas() {
         }}
       />
       <RemoteCursors />
+
+      {/* Floating Text/Note Input Overlay */}
+      {editingState && (
+        <textarea
+          autoFocus
+          value={editingState.text}
+          onChange={(e) => {
+            const val = e.target.value;
+            setEditingState((prev) => (prev ? { ...prev, text: val } : null));
+            updateStrokeText(editingState.id, val);
+          }}
+          onBlur={() => setEditingState(null)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setEditingState(null);
+          }}
+          className="fixed z-50 p-2 rounded-lg bg-background/95 text-foreground border-2 border-primary shadow-2xl focus:outline-none font-sans text-sm resize-both"
+          style={{
+            left: `${editingState.x}px`,
+            top: `${editingState.y}px`,
+            width: '180px',
+            minHeight: '60px',
+          }}
+        />
+      )}
     </div>
   );
 }

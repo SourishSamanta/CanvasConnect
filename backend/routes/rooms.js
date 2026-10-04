@@ -10,15 +10,13 @@ const PLAN_LIMITS = {
   premium: 20,
 };
 
-// GET /api/rooms — list user's rooms (or recent rooms if guest)
+// GET /api/rooms — list user's rooms (or empty if guest)
 router.get('/', optionalAuth, async (req, res) => {
   try {
-    let query = {};
-    if (req.user) {
-      // Return rooms owned by logged in user
-      query = { owner: req.user._id };
+    if (!req.user) {
+      return res.json([]);
     }
-    const rooms = await Room.find(query).sort({ updatedAt: -1 }).limit(100);
+    const rooms = await Room.find({ owner: req.user._id }).sort({ updatedAt: -1 }).limit(100);
     res.json(rooms);
   } catch (err) {
     res.status(500).json({ error: err.message });

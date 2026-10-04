@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { useWhiteboardStore } from './whiteboardStore';
 import {
   apiLogin,
   apiSignup,
@@ -99,6 +100,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
   logout: () => {
     localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem('canvasconnect_user_boards');
+    try {
+      useWhiteboardStore.setState({ boardHistory: [], strokes: [], roomCode: null, isInRoom: false });
+    } catch {}
     set({
       token: null,
       user: null,

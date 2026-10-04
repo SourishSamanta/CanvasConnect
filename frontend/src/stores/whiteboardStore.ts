@@ -1,11 +1,11 @@
 import { create } from 'zustand';
-import { apiCreateRoom, apiGetRoom, apiUpdateRoom, apiDeleteRoom, RoomMeta } from '@/lib/api';
+import { apiCreateRoom, apiGetRoom, apiUpdateRoom, apiDeleteRoom } from '@/lib/api';
 import {
   yjsConnect, yjsDisconnect, yjsAddStroke, yjsUpdateStroke, yjsUpdateStrokes, yjsSetStrokes,
   yjsUndo, yjsRedo, yjsClearCanvas,
 } from '@/hooks/useWhiteboard';
 
-export type Tool = 'select' | 'pen' | 'eraser' | 'rectangle' | 'circle' | 'line' | 'arrow';
+export type Tool = 'select' | 'hand' | 'pen' | 'eraser' | 'rectangle' | 'circle' | 'line' | 'arrow' | 'text' | 'note' | 'laser';
 export type Theme = 'light' | 'dark';
 export type CanvasTemplate = 'grid' | 'dots' | 'blank' | 'dark';
 
@@ -17,6 +17,9 @@ export interface Stroke {
   color: string;
   size: number;
   tool: Tool;
+  text?: string;
+  fillColor?: string;
+  fontSize?: number;
 }
 
 export interface Participant {
@@ -38,9 +41,11 @@ export interface BoardItem {
   updatedAt: string;
   strokeCount: number;
   isFavorite?: boolean;
+  strokes?: Stroke[];
 }
 
 const COLORS = ['#1e1e1e', '#ffffff', '#e03131', '#2f9e44', '#1971c2', '#f08c00', '#f5c211', '#7048e8'];
+const NOTE_COLORS = ['#fef08a', '#bbf7d0', '#bfdbfe', '#fbcfe8', '#e9d5ff', '#fed7aa'];
 const CURSOR_COLORS = [
   'hsl(199, 89%, 48%)', 'hsl(142, 71%, 45%)',
   'hsl(25, 95%, 53%)',  'hsl(280, 67%, 55%)', 'hsl(340, 82%, 52%)',
@@ -52,6 +57,7 @@ const AVATARS = [
 ];
 
 export const AVAILABLE_COLORS = COLORS;
+export const AVAILABLE_NOTE_COLORS = NOTE_COLORS;
 export const AVAILABLE_CURSOR_COLORS = CURSOR_COLORS;
 export const AVAILABLE_AVATARS = AVATARS;
 
@@ -78,7 +84,9 @@ function getInitialProfile() {
   try {
     const raw = localStorage.getItem(STORAGE_PROFILE_KEY);
     if (raw) return { ...defaultProfile, ...JSON.parse(raw) };
-  } catch {}
+  } catch (err) {
+    console.warn('Failed to parse user profile:', err);
+  }
   return defaultProfile;
 }
 
@@ -86,7 +94,9 @@ function getInitialBoards(): BoardItem[] {
   try {
     const raw = localStorage.getItem(STORAGE_BOARDS_KEY);
     if (raw) return JSON.parse(raw);
-  } catch {}
+  } catch (err) {
+    console.warn('Failed to parse boards history:', err);
+  }
   return [];
 }
 
@@ -115,12 +125,14 @@ interface WhiteboardState {
   // Drawing State
   tool: Tool;
   color: string;
+  fillColor: string;
+  fontSize: number;
   brushSize: number;
   strokes: Stroke[];
   currentStroke: Stroke | null;
   selectedStrokeIds: string[];
-  undoStack: Stroke[][];
-  redoStack: Stroke[][];
+  canUndo: boolean;
+  canRedo: boolean;
 
   // Viewport
   zoom: number;
@@ -138,11 +150,17 @@ interface WhiteboardState {
   toggleBoardFavorite: (roomId: string) => void;
   updateBoardTitle: (roomId: string, newTitle: string) => Promise<void>;
 
-  // Room Actions
+  // Room & Drawing Actions
   setTool: (t: Tool) => void;
   setColor: (c: string) => void;
+  setFillColor: (c: string) => void;
+  setFontSize: (s: number) => void;
   setBrushSize: (s: number) => void;
   setSelectedStrokeIds: (ids: string[]) => void;
+  deleteSelectedStrokes: () => void;
+  duplicateSelectedStrokes: () => void;
+  changeSelectedStrokesColor: (color: string) => void;
+  updateStrokeText: (id: string, text: string) => void;
   updateStroke: (stroke: Stroke) => void;
   updateStrokes: (strokes: Stroke[]) => void;
   setStrokes: (strokes: Stroke[]) => void;
@@ -162,9 +180,10 @@ interface WhiteboardState {
   setPan: (x: number, y: number) => void;
   toggleTheme: () => void;
 
-  // Internal
+  // Internal Callbacks
   _setStrokes: (s: Stroke[]) => void;
   _setParticipants: (p: Participant[]) => void;
+  _setUndoRedoState: (canUndo: boolean, canRedo: boolean) => void;
 }
 
 const initialProfile = getInitialProfile();
@@ -194,12 +213,14 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
   // Drawing
   tool: 'pen',
   color: COLORS[0],
+  fillColor: NOTE_COLORS[0],
+  fontSize: 18,
   brushSize: 3,
   strokes: [],
   currentStroke: null,
   selectedStrokeIds: [],
-  undoStack: [[]],
-  redoStack: [],
+  canUndo: false,
+  canRedo: false,
 
   // Viewport
   zoom: 1,
@@ -222,7 +243,9 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
       };
       try {
         localStorage.setItem(STORAGE_PROFILE_KEY, JSON.stringify(updated));
-      } catch {}
+      } catch (err) {
+        console.warn('Failed to save profile updates:', err);
+      }
       return updated;
     });
   },
@@ -233,6 +256,7 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
     set((state) => {
       const existingIndex = state.boardHistory.findIndex(b => b.roomId === boardData.roomId);
       const now = new Date().toISOString();
+      const currentStrokes = boardData.strokes || state.strokes;
 
       let updatedList: BoardItem[];
       if (existingIndex >= 0) {
@@ -241,8 +265,9 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
           ...updatedList[existingIndex],
           name: boardData.name || updatedList[existingIndex].name,
           template: boardData.template || updatedList[existingIndex].template,
-          strokeCount: boardData.strokeCount ?? state.strokes.length,
+          strokeCount: boardData.strokeCount ?? currentStrokes.length,
           updatedAt: now,
+          strokes: currentStrokes.length > 0 ? currentStrokes : updatedList[existingIndex].strokes || [],
         };
       } else {
         const newBoard: BoardItem = {
@@ -253,15 +278,18 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
           template: boardData.template || state.preferredTemplate || 'grid',
           createdAt: boardData.createdAt || now,
           updatedAt: now,
-          strokeCount: boardData.strokeCount || 0,
+          strokeCount: currentStrokes.length,
           isFavorite: false,
+          strokes: currentStrokes,
         };
         updatedList = [newBoard, ...state.boardHistory];
       }
 
       try {
         localStorage.setItem(STORAGE_BOARDS_KEY, JSON.stringify(updatedList));
-      } catch {}
+      } catch (err) {
+        console.warn('Failed to save boards to storage:', err);
+      }
 
       return { boardHistory: updatedList };
     });
@@ -270,12 +298,16 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
   removeBoardFromHistory: async (roomId) => {
     try {
       await apiDeleteRoom(roomId);
-    } catch {}
+    } catch (err) {
+      console.warn('Failed to delete room on backend:', err);
+    }
     set((state) => {
       const filtered = state.boardHistory.filter(b => b.roomId !== roomId);
       try {
         localStorage.setItem(STORAGE_BOARDS_KEY, JSON.stringify(filtered));
-      } catch {}
+      } catch (err) {
+        console.warn('Failed to save updated boards list:', err);
+      }
       return { boardHistory: filtered };
     });
   },
@@ -285,7 +317,9 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
       const updated = state.boardHistory.map(b => b.roomId === roomId ? { ...b, isFavorite: !b.isFavorite } : b);
       try {
         localStorage.setItem(STORAGE_BOARDS_KEY, JSON.stringify(updated));
-      } catch {}
+      } catch (err) {
+        console.warn('Failed to save favorite toggle:', err);
+      }
       return { boardHistory: updated };
     });
   },
@@ -293,12 +327,16 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
   updateBoardTitle: async (roomId, newTitle) => {
     try {
       await apiUpdateRoom(roomId, { name: newTitle });
-    } catch {}
+    } catch (err) {
+      console.warn('Failed to update room title on backend:', err);
+    }
     set((state) => {
       const updated = state.boardHistory.map(b => b.roomId === roomId ? { ...b, name: newTitle, updatedAt: new Date().toISOString() } : b);
       try {
         localStorage.setItem(STORAGE_BOARDS_KEY, JSON.stringify(updated));
-      } catch {}
+      } catch (err) {
+        console.warn('Failed to save updated board title:', err);
+      }
       return { boardHistory: updated };
     });
   },
@@ -312,8 +350,58 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
     }
   },
   setColor: (color) => set({ color }),
+  setFillColor: (fillColor) => set({ fillColor }),
+  setFontSize: (fontSize) => set({ fontSize }),
   setBrushSize: (brushSize) => set({ brushSize }),
   setSelectedStrokeIds: (selectedStrokeIds) => set({ selectedStrokeIds }),
+
+  deleteSelectedStrokes: () => {
+    const { strokes, selectedStrokeIds } = get();
+    if (selectedStrokeIds.length === 0) return;
+    const remaining = strokes.filter((s) => !selectedStrokeIds.includes(s.id));
+    set({ strokes: remaining, selectedStrokeIds: [] });
+    yjsSetStrokes(remaining);
+  },
+
+  duplicateSelectedStrokes: () => {
+    const { strokes, selectedStrokeIds } = get();
+    if (selectedStrokeIds.length === 0) return;
+    const newStrokes: Stroke[] = [];
+    const newIds: string[] = [];
+    for (const s of strokes) {
+      if (selectedStrokeIds.includes(s.id)) {
+        const dupId = generateId();
+        newIds.push(dupId);
+        newStrokes.push({
+          ...s,
+          id: dupId,
+          points: s.points.map((p) => ({ x: p.x + 20, y: p.y + 20 })),
+        });
+      }
+    }
+    const combined = [...strokes, ...newStrokes];
+    set({ strokes: combined, selectedStrokeIds: newIds });
+    yjsSetStrokes(combined);
+  },
+
+  changeSelectedStrokesColor: (color: string) => {
+    const { strokes, selectedStrokeIds } = get();
+    if (selectedStrokeIds.length === 0) return;
+    const updated = strokes.map((s) =>
+      selectedStrokeIds.includes(s.id) ? { ...s, color } : s
+    );
+    set({ strokes: updated });
+    yjsSetStrokes(updated);
+  },
+
+  updateStrokeText: (id: string, text: string) => {
+    const { strokes } = get();
+    const updated = strokes.map((s) => (s.id === id ? { ...s, text } : s));
+    set({ strokes: updated });
+    const target = updated.find((s) => s.id === id);
+    if (target) yjsUpdateStroke(target);
+  },
+
   updateStroke: (updatedStroke) => {
     set((state) => ({
       strokes: state.strokes.map((s) => (s.id === updatedStroke.id ? updatedStroke : s)),
@@ -324,6 +412,7 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
     set({ strokes });
     yjsSetStrokes(strokes);
   },
+
   eraseAtPoint: (center, radius) => {
     const { strokes } = get();
     let modified = false;
@@ -338,15 +427,17 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
     }
 
     for (const stroke of strokes) {
-      if (stroke.tool === 'eraser') continue; // Purge any legacy mask strokes
+      if (stroke.tool === 'eraser') continue;
 
-      const isShape =
+      const isShapeOrText =
         stroke.tool === 'rectangle' ||
         stroke.tool === 'circle' ||
         stroke.tool === 'line' ||
-        stroke.tool === 'arrow';
+        stroke.tool === 'arrow' ||
+        stroke.tool === 'text' ||
+        stroke.tool === 'note';
 
-      if (isShape) {
+      if (isShapeOrText) {
         const pts = stroke.points;
         let touched = false;
         if (pts.length >= 1 && Math.hypot(pts[0].x - center.x, pts[0].y - center.y) <= radius) {
@@ -409,17 +500,21 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
   },
 
   startStroke: (point) => {
-    const { tool, color, brushSize } = get();
-    if (tool === 'select' || tool === 'eraser') return;
+    const { tool, color, fillColor, fontSize, brushSize } = get();
+    if (tool === 'select' || tool === 'eraser' || tool === 'hand') return;
 
     const isShape = tool === 'rectangle' || tool === 'circle' || tool === 'line' || tool === 'arrow';
-    const points = isShape ? [point, point] : [point];
+    const isTextOrNote = tool === 'text' || tool === 'note';
+    const points = (isShape || isTextOrNote) ? [point, point] : [point];
 
     set({
       currentStroke: {
         id: generateId(),
         points,
         color: color,
+        fillColor: tool === 'note' ? fillColor || '#fef08a' : undefined,
+        fontSize: tool === 'text' || tool === 'note' ? fontSize || 18 : undefined,
+        text: tool === 'text' ? 'Type text...' : tool === 'note' ? 'Sticky note...' : undefined,
         size: brushSize,
         tool,
       },
@@ -433,7 +528,9 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
       currentStroke.tool === 'rectangle' ||
       currentStroke.tool === 'circle' ||
       currentStroke.tool === 'line' ||
-      currentStroke.tool === 'arrow';
+      currentStroke.tool === 'arrow' ||
+      currentStroke.tool === 'text' ||
+      currentStroke.tool === 'note';
     if (isShape) {
       set({ currentStroke: { ...currentStroke, points: [currentStroke.points[0], point] } });
     } else {
@@ -443,7 +540,8 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
 
   endStroke: () => {
     const { currentStroke, roomCode, roomName } = get();
-    if (!currentStroke || currentStroke.points.length < 2) {
+    if (!currentStroke) return;
+    if (currentStroke.tool !== 'text' && currentStroke.tool !== 'note' && currentStroke.points.length < 2) {
       set({ currentStroke: null });
       return;
     }
@@ -451,7 +549,7 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
     set({ currentStroke: null });
 
     if (roomCode) {
-      get().saveBoardToHistory({ roomId: roomCode, name: roomName });
+      get().saveBoardToHistory({ roomId: roomCode, name: roomName, strokes: get().strokes });
     }
   },
 
@@ -468,7 +566,6 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
       const finalName = name?.trim() || 'Interactive Canvas Session';
       const finalTemplate = template || get().preferredTemplate || 'grid';
 
-      // 1. Backend REST call
       const roomMeta = await apiCreateRoom({
         name: finalName,
         template: finalTemplate,
@@ -477,24 +574,28 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
         color: cursorColor || pickColor(userId),
       });
 
-      const roomId = roomMeta.roomId;
+      const roomId = roomMeta.roomId.toUpperCase();
 
-      // 2. Connect Yjs
-      yjsConnect(
-        roomId,
-        { id: userId, name: userName, avatar: userAvatar, color: cursorColor || pickColor(userId) },
-        (strokes) => get()._setStrokes(strokes),
-        (participants) => get()._setParticipants(participants)
-      );
-
-      // 3. Update store & save board history
+      // 1. Set room state & clear canvas for new session BEFORE connecting Yjs
       set({
         roomCode: roomId,
         roomName: finalName,
         roomTemplate: finalTemplate,
         isInRoom: true,
         isConnecting: false,
+        strokes: [],
+        selectedStrokeIds: [],
+        currentStroke: null,
       });
+
+      // 2. Connect Yjs for this room
+      yjsConnect(
+        roomId,
+        { id: userId, name: userName, avatar: userAvatar, color: cursorColor || pickColor(userId) },
+        (strokes) => get()._setStrokes(strokes),
+        (participants) => get()._setParticipants(participants),
+        (canUndo, canRedo) => get()._setUndoRedoState(canUndo, canRedo)
+      );
 
       get().saveBoardToHistory({
         roomId,
@@ -516,24 +617,28 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
       const { userName, userAvatar, cursorColor, userId } = get();
       const cleanCode = code.trim().toUpperCase();
 
-      // 1. Fetch room details
       const roomMeta = await apiGetRoom(cleanCode);
 
-      // 2. Connect Yjs
-      yjsConnect(
-        roomMeta.roomId,
-        { id: userId, name: userName, avatar: userAvatar, color: cursorColor || pickColor(userId) },
-        (strokes) => get()._setStrokes(strokes),
-        (participants) => get()._setParticipants(participants)
-      );
-
+      // 1. Set room state & reset stroke state BEFORE connecting Yjs
       set({
         roomCode: roomMeta.roomId,
         roomName: roomMeta.name || 'Joined Canvas',
         roomTemplate: (roomMeta.template as CanvasTemplate) || 'grid',
         isInRoom: true,
         isConnecting: false,
+        strokes: [],
+        selectedStrokeIds: [],
+        currentStroke: null,
       });
+
+      // 2. Connect Yjs for this room
+      yjsConnect(
+        roomMeta.roomId,
+        { id: userId, name: userName, avatar: userAvatar, color: cursorColor || pickColor(userId) },
+        (strokes) => get()._setStrokes(strokes),
+        (participants) => get()._setParticipants(participants),
+        (canUndo, canRedo) => get()._setUndoRedoState(canUndo, canRedo)
+      );
 
       get().saveBoardToHistory({
         roomId: roomMeta.roomId,
@@ -554,6 +659,7 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
         name: roomName,
         template: roomTemplate,
         strokeCount: strokes.length,
+        strokes,
       });
     }
 
@@ -566,15 +672,18 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
       participants: [],
       strokes: [],
       currentStroke: null,
-      undoStack: [],
-      redoStack: [],
+      selectedStrokeIds: [],
+      canUndo: false,
+      canRedo: false,
     });
   },
 
   // ─── Internal Callbacks ───────────────────────────────────────────────────
 
   _setStrokes: (strokes) => set({ strokes }),
+
   _setParticipants: (participants) => set({ participants }),
+  _setUndoRedoState: (canUndo, canRedo) => set({ canUndo, canRedo }),
 
   // ─── Viewport & Theme ─────────────────────────────────────────────────────
 

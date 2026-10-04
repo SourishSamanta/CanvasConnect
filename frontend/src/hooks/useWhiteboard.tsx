@@ -16,7 +16,8 @@ export function yjsConnect(
   roomId: string,
   user: { id: string; name: string; avatar: string; color: string },
   onStrokesChange: (strokes: Stroke[]) => void,
-  onParticipantsChange: (participants: Participant[]) => void
+  onParticipantsChange: (participants: Participant[]) => void,
+  onUndoRedoChange?: (canUndo: boolean, canRedo: boolean) => void
 ) {
   // Clean up any previous session
   yjsDisconnect();
@@ -32,6 +33,15 @@ export function yjsConnect(
   // UndoManager tracks only our own changes
   undoManager = new Y.UndoManager(yStrokes);
 
+  const notifyUndoRedo = () => {
+    if (onUndoRedoChange && undoManager) {
+      onUndoRedoChange(undoManager.undoStack.length > 0, undoManager.redoStack.length > 0);
+    }
+  };
+
+  undoManager.on('stack-item-added', notifyUndoRedo);
+  undoManager.on('stack-item-popped', notifyUndoRedo);
+
   // Set this user's presence — visible to everyone in the room
   provider.awareness.setLocalState({
     user: { id: user.id, name: user.name, avatar: user.avatar, color: user.color },
@@ -41,6 +51,7 @@ export function yjsConnect(
   // Fire onStrokesChange whenever anyone (including us) adds/removes strokes
   yStrokes.observe(() => {
     onStrokesChange(yStrokes!.toArray());
+    notifyUndoRedo();
   });
 
   // Fire onParticipantsChange whenever anyone joins, leaves, or moves cursor

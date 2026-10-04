@@ -33,7 +33,8 @@ function setupYjsWebSocket(wss) {
   wss.on('connection', (ws, req) => {
     // Room ID is the last part of the URL path: /ws/ROOM_ID
     const url = new URL(req.url, 'http://localhost');
-    const roomId = url.pathname.replace('/ws/', '').replace('/ws', '') || 'default';
+    const pathSegments = url.pathname.split('/').filter(Boolean);
+    const roomId = (pathSegments.length >= 2 ? pathSegments[1] : pathSegments[0] || 'DEFAULT').toUpperCase();
     console.log(`Client connected to room: ${roomId}`);
 
 
