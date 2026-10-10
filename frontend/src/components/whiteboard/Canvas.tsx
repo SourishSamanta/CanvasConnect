@@ -32,7 +32,7 @@ function drawArrowHead(ctx: CanvasRenderingContext2D, from: Point, to: Point, si
   ctx.fill();
 }
 
-function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke, theme: string) {
+function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke, theme: string, editingStateId?: string) {
   if (!stroke.points || stroke.points.length === 0) return;
   const pts = stroke.points;
 
@@ -71,15 +71,17 @@ function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke, theme: string
     ctx.stroke();
     drawArrowHead(ctx, p0, p1, stroke.size);
   } else if (stroke.tool === 'text') {
-    const p0 = pts[0];
-    const fontSize = stroke.fontSize || 18;
-    ctx.font = `600 ${fontSize}px Inter, sans-serif`;
-    ctx.fillStyle = getEffectiveColor(stroke.color, theme);
-    ctx.textBaseline = 'top';
-    const lines = (stroke.text || 'Type text...').split('\n');
-    lines.forEach((line, index) => {
-      ctx.fillText(line, p0.x, p0.y + index * (fontSize * 1.25));
-    });
+    if (stroke.id !== editingStateId) {
+      const p0 = pts[0];
+      const fontSize = stroke.fontSize || 18;
+      ctx.font = `600 ${fontSize}px Inter, sans-serif`;
+      ctx.fillStyle = getEffectiveColor(stroke.color, theme);
+      ctx.textBaseline = 'top';
+      const lines = (stroke.text || 'Type text...').split('\n');
+      lines.forEach((line, index) => {
+        ctx.fillText(line, p0.x, p0.y + index * (fontSize * 1.25));
+      });
+    }
   } else if (stroke.tool === 'note') {
     const p0 = pts[0];
     const w = 160;
@@ -99,15 +101,32 @@ function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke, theme: string
     ctx.strokeRect(p0.x, p0.y, w, h);
 
     const fontSize = stroke.fontSize || 14;
-    ctx.font = `500 ${fontSize}px Inter, sans-serif`;
-    ctx.fillStyle = '#1e293b';
-    ctx.textBaseline = 'top';
-    const lines = (stroke.text || 'Sticky note...').split('\n');
-    lines.forEach((line, index) => {
-      if (index * (fontSize * 1.25) < h - 24) {
-        ctx.fillText(line, p0.x + 12, p0.y + 12 + index * (fontSize * 1.25), w - 24);
+    if (stroke.id !== editingStateId) {
+      ctx.font = `500 ${fontSize}px Inter, sans-serif`;
+      ctx.fillStyle = '#1e293b';
+      ctx.textBaseline = 'top';
+      const paragraphs = (stroke.text || 'Sticky note...').split('\n');
+      const lines: string[] = [];
+      for (const p of paragraphs) {
+        const words = p.split(' ');
+        let currentLine = words[0] || '';
+        for (let i = 1; i < words.length; i++) {
+          const word = words[i];
+          if (ctx.measureText(currentLine + ' ' + word).width < w - 24) {
+            currentLine += ' ' + word;
+          } else {
+            lines.push(currentLine);
+            currentLine = word;
+          }
+        }
+        lines.push(currentLine);
       }
-    });
+      lines.forEach((line, index) => {
+        if (index * (fontSize * 1.25) < h - 24) {
+          ctx.fillText(line, p0.x + 12, p0.y + 12 + index * (fontSize * 1.25));
+        }
+      });
+    }
   } else if (stroke.tool === 'laser') {
     if (pts.length < 1) return;
     ctx.save();
@@ -115,12 +134,29 @@ function drawStroke(ctx: CanvasRenderingContext2D, stroke: Stroke, theme: string
     ctx.shadowColor = '#ef4444';
     ctx.shadowBlur = 12;
     ctx.lineWidth = stroke.size * 2.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    for (let i = 1; i < pts.length; i++) {
-      ctx.lineTo(pts[i].x, pts[i].y);
+    
+    if (pts.length < 2) {
+      ctx.arc(pts[0].x, pts[0].y, stroke.size / 2, 0, Math.PI * 2);
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.fill();
+    } else {
+      ctx.moveTo(pts[0].x, pts[0].y);
+      if (pts.length === 2) {
+        ctx.lineTo(pts[1].x, pts[1].y);
+      } else {
+        for (let i = 1; i < pts.length - 1; i++) {
+          const mx = (pts[i].x + pts[i + 1].x) / 2;
+          const my = (pts[i].y + pts[i + 1].y) / 2;
+          ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+        }
+        ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
+
     const last = pts[pts.length - 1];
     ctx.beginPath();
     ctx.arc(last.x, last.y, 6, 0, Math.PI * 2);
@@ -280,7 +316,7 @@ export default function Canvas() {
   const [marqueeBox, setMarqueeBox] = useState<{ start: Point; current: Point } | null>(null);
 
   // Inline Text Editing State
-  const [editingState, setEditingState] = useState<{ id: string; text: string; x: number; y: number } | null>(null);
+  const [editingState, setEditingState] = useState<{ id: string; text: string; x: number; y: number; tool: string; color: string; fontSize: number; } | null>(null);
 
   // Mobile Touch Gestures
   const touchStartDist = useRef<number | null>(null);
@@ -371,10 +407,10 @@ export default function Canvas() {
       offscreenCtx.scale(zoom, zoom);
 
       for (const stroke of strokes) {
-        drawStroke(offscreenCtx, stroke, theme);
+        drawStroke(offscreenCtx, stroke, theme, editingState?.id);
       }
       if (currentStroke) {
-        drawStroke(offscreenCtx, currentStroke, theme);
+        drawStroke(offscreenCtx, currentStroke, theme, editingState?.id);
       }
       offscreenCtx.restore();
     }
@@ -449,7 +485,7 @@ export default function Canvas() {
     }
 
     ctx.restore();
-  }, [strokes, currentStroke, selectedStrokeIds, marqueeBox, zoom, panX, panY, theme, tool, brushSize]);
+  }, [strokes, currentStroke, selectedStrokeIds, marqueeBox, zoom, panX, panY, theme, tool, brushSize, editingState?.id]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -784,6 +820,9 @@ export default function Canvas() {
                 text: newStroke.text || '',
                 x: pt.x * zoom + panX,
                 y: pt.y * zoom + panY,
+                tool: newStroke.tool,
+                color: newStroke.color,
+                fontSize: newStroke.fontSize || (newStroke.tool === 'note' ? 14 : 18)
               });
             }
           }
@@ -804,6 +843,9 @@ export default function Canvas() {
           text: stroke.text || '',
           x: screenX,
           y: screenY,
+          tool: stroke.tool,
+          color: stroke.color,
+          fontSize: stroke.fontSize || (stroke.tool === 'note' ? 14 : 18)
         });
         break;
       }
@@ -854,12 +896,28 @@ export default function Canvas() {
           onKeyDown={(e) => {
             if (e.key === 'Escape') setEditingState(null);
           }}
-          className="fixed z-50 p-2 rounded-lg bg-background/95 text-foreground border-2 border-primary shadow-2xl focus:outline-none font-sans text-sm resize-both"
           style={{
+            position: 'fixed',
+            zIndex: 50,
             left: `${editingState.x}px`,
             top: `${editingState.y}px`,
-            width: '180px',
-            minHeight: '60px',
+            width: editingState.tool === 'note' ? `${160 * zoom}px` : 'auto',
+            minWidth: editingState.tool === 'text' ? '180px' : undefined,
+            height: editingState.tool === 'note' ? `${140 * zoom}px` : 'auto',
+            minHeight: editingState.tool === 'text' ? '60px' : undefined,
+            padding: editingState.tool === 'note' ? `${12 * zoom}px` : '0',
+            background: 'transparent',
+            color: editingState.tool === 'note' ? '#1e293b' : getEffectiveColor(editingState.color, theme),
+            fontFamily: 'Inter, sans-serif',
+            fontSize: `${(editingState.fontSize || (editingState.tool === 'note' ? 14 : 18)) * zoom}px`,
+            fontWeight: editingState.tool === 'note' ? 500 : 600,
+            lineHeight: 1.25,
+            border: 'none',
+            outline: 'none',
+            resize: 'none',
+            overflow: 'hidden',
+            whiteSpace: 'pre-wrap',
+            wordWrap: 'break-word',
           }}
         />
       )}

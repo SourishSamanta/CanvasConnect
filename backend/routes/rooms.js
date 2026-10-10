@@ -24,26 +24,23 @@ router.get('/', optionalAuth, async (req, res) => {
 });
 
 // POST /api/rooms — create a new room with plan limit checking
-router.post('/', optionalAuth, async (req, res) => {
+router.post('/', auth, async (req, res) => {
   try {
     const { name, description, template, username, avatar, color } = req.body;
 
-    let ownerId = null;
-    if (req.user) {
-      ownerId = req.user._id;
-      const userPlan = req.user.plan || 'free';
-      const limit = PLAN_LIMITS[userPlan] || 3;
-      const currentCount = await Room.countDocuments({ owner: ownerId });
+    let ownerId = req.user._id;
+    const userPlan = req.user.plan || 'free';
+    const limit = PLAN_LIMITS[userPlan] || 3;
+    const currentCount = await Room.countDocuments({ owner: ownerId });
 
-      if (currentCount >= limit) {
-        return res.status(403).json({
-          error: `Board limit reached (${currentCount}/${limit}) for your ${userPlan.toUpperCase()} plan. Upgrade your plan to create more boards.`,
-          limitReached: true,
-          plan: userPlan,
-          limit,
-          currentCount,
-        });
-      }
+    if (currentCount >= limit) {
+      return res.status(403).json({
+        error: `Board limit reached (${currentCount}/${limit}) for your ${userPlan.toUpperCase()} plan. Upgrade your plan to create more boards.`,
+        limitReached: true,
+        plan: userPlan,
+        limit,
+        currentCount,
+      });
     }
 
     const roomId = uuidv4().slice(0, 8).toUpperCase();

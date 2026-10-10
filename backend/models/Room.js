@@ -10,6 +10,7 @@ const roomSchema = new mongoose.Schema({
   template:    { type: String, default: 'grid' },
   strokeCount: { type: Number, default: 0 },
   isFavorite:  { type: Boolean, default: false },
+  documentState: { type: Buffer },
   users: [{
     username: String,
     avatar:   String,

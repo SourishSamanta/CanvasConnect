@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { useAuthStore } from './authStore';
 import { apiCreateRoom, apiGetRoom, apiUpdateRoom, apiDeleteRoom } from '@/lib/api';
 import {
   yjsConnect, yjsDisconnect, yjsAddStroke, yjsUpdateStroke, yjsUpdateStrokes, yjsSetStrokes,
@@ -408,6 +409,13 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
     }));
     yjsUpdateStroke(updatedStroke);
   },
+  updateStrokes: (updatedStrokes) => {
+    set((state) => {
+      const map = new Map(updatedStrokes.map((s) => [s.id, s]));
+      return { strokes: state.strokes.map((s) => map.get(s.id) || s) };
+    });
+    yjsUpdateStrokes(updatedStrokes);
+  },
   setStrokes: (strokes) => {
     set({ strokes });
     yjsSetStrokes(strokes);
@@ -548,6 +556,15 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
     yjsAddStroke(currentStroke);
     set({ currentStroke: null });
 
+    if (currentStroke.tool === 'laser') {
+      setTimeout(() => {
+        const { strokes } = get();
+        const remaining = strokes.filter(s => s.id !== currentStroke.id);
+        set({ strokes: remaining });
+        yjsSetStrokes(remaining);
+      }, 2500);
+    }
+
     if (roomCode) {
       get().saveBoardToHistory({ roomId: roomCode, name: roomName, strokes: get().strokes });
     }
@@ -560,6 +577,11 @@ export const useWhiteboardStore = create<WhiteboardState>((set, get) => ({
   // ─── Room Connection ──────────────────────────────────────────────────────
 
   createRoom: async (name?: string, template?: CanvasTemplate) => {
+    const authStore = useAuthStore.getState();
+    if (!authStore.isAuthenticated) {
+      authStore.openAuthModal('signup');
+      throw new Error('Please login or create an account to create a board.');
+    }
     set({ isConnecting: true });
     try {
       const { userName, userAvatar, cursorColor, userId } = get();

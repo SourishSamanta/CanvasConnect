@@ -4,6 +4,7 @@ const syncProtocol = require('y-protocols/sync');
 const awarenessProtocol = require('y-protocols/awareness');
 const encoding = require('lib0/encoding');
 const decoding = require('lib0/decoding');
+const Room = require('../models/Room');
 
 // Install these:
 // npm install yjs y-protocols lib0
@@ -14,9 +15,34 @@ const MESSAGE_AWARENESS = 1;
 // In-memory store: roomId → { ydoc, awareness, clients: Set }
 const rooms = new Map();
 
-function getOrCreateRoom(roomId) {
+async function getOrCreateRoom(roomId) {
   if (!rooms.has(roomId)) {
     const ydoc = new Y.Doc();
+    
+    // Load from DB
+    try {
+      const roomDoc = await Room.findOne({ roomId });
+      if (roomDoc && roomDoc.documentState) {
+        Y.applyUpdate(ydoc, roomDoc.documentState);
+      }
+    } catch (err) {
+      console.error('Error loading room state from DB:', err);
+    }
+    
+    // Persist to DB on update (debounced)
+    let saveTimeout = null;
+    ydoc.on('update', (update) => {
+      if (saveTimeout) clearTimeout(saveTimeout);
+      saveTimeout = setTimeout(async () => {
+        try {
+          const state = Y.encodeStateAsUpdate(ydoc);
+          await Room.updateOne({ roomId }, { documentState: Buffer.from(state) });
+        } catch (err) {
+          console.error('Error saving room state to DB:', err);
+        }
+      }, 2000);
+    });
+
     const awareness = new awarenessProtocol.Awareness(ydoc);
     rooms.set(roomId, { ydoc, awareness, clients: new Set() });
   }
@@ -30,7 +56,7 @@ function send(ws, message) {
 }
 
 function setupYjsWebSocket(wss) {
-  wss.on('connection', (ws, req) => {
+  wss.on('connection', async (ws, req) => {
     // Room ID is the last part of the URL path: /ws/ROOM_ID
     const url = new URL(req.url, 'http://localhost');
     const pathSegments = url.pathname.split('/').filter(Boolean);
@@ -38,7 +64,7 @@ function setupYjsWebSocket(wss) {
     console.log(`Client connected to room: ${roomId}`);
 
 
-    const room = getOrCreateRoom(roomId);
+    const room = await getOrCreateRoom(roomId);
     const { ydoc, awareness, clients } = room;
 
     clients.add(ws);
